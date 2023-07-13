@@ -181,6 +181,8 @@ GOSSIP_MAX_SIZE_BELLATRIX = 10 * 2**20
 MAX_CHUNK_SIZE_BELLATRIX = 10 * 2**20
 SAFE_SLOTS_TO_IMPORT_OPTIMISTICALLY = 128
 DOMAIN_BLS_TO_EXECUTION_CHANGE = DomainType('0x0A000000')
+SLASHED_ATTESTER_FLAG_INDEX = 0
+SLASHED_PROPOSER_FLAG_INDEX = 1
 
 # Preset vars
 MAX_COMMITTEES_PER_SLOT = uint64(64)
@@ -313,7 +315,7 @@ class Validator(Container):
     pubkey: BLSPubkey
     withdrawal_credentials: Bytes32  # Commitment to pubkey for withdrawals
     effective_balance: Gwei  # Balance at stake
-    slashed: boolean
+    slashed: uint8
     # Status epochs
     activation_eligibility_epoch: Epoch  # When criteria for activation were met
     activation_epoch: Epoch
@@ -843,7 +845,7 @@ def is_slashable_validator(validator: Validator, epoch: Epoch) -> bool:
     """
     Check if ``validator`` is slashable.
     """
-    return (not validator.slashed) and (validator.activation_epoch <= epoch < validator.withdrawable_epoch)
+    return (not is_slashed_attester(validator)) and (validator.activation_epoch <= epoch < validator.withdrawable_epoch)
 
 
 def is_slashable_attestation_data(data_1: AttestationData, data_2: AttestationData) -> bool:
@@ -1204,7 +1206,7 @@ def slash_validator(state: BeaconState,
     epoch = get_current_epoch(state)
     initiate_validator_exit(state, slashed_index)
     validator = state.validators[slashed_index]
-    validator.slashed = True
+    validator.slashed = add_flag(validator.slashed, SLASHED_ATTESTER_FLAG_INDEX)
     validator.withdrawable_epoch = max(validator.withdrawable_epoch, Epoch(epoch + EPOCHS_PER_SLASHINGS_VECTOR))
     state.slashings[epoch % EPOCHS_PER_SLASHINGS_VECTOR] += validator.effective_balance
     slashing_penalty = validator.effective_balance // MIN_SLASHING_PENALTY_QUOTIENT_BELLATRIX  # [Modified in Bellatrix]
@@ -1357,7 +1359,7 @@ def get_unslashed_attesting_indices(state: BeaconState,
     output = set()  # type: Set[ValidatorIndex]
     for a in attestations:
         output = output.union(get_attesting_indices(state, a.data, a.aggregation_bits))
-    return set(filter(lambda index: not state.validators[index].slashed, output))
+    return set(filter(lambda index: not is_slashed_attester(state.validators[index]), output))
 
 
 def get_attesting_balance(state: BeaconState, attestations: Sequence[PendingAttestation]) -> Gwei:
@@ -1443,7 +1445,7 @@ def get_eligible_validator_indices(state: BeaconState) -> Sequence[ValidatorInde
     previous_epoch = get_previous_epoch(state)
     return [
         ValidatorIndex(index) for index, v in enumerate(state.validators)
-        if is_active_validator(v, previous_epoch) or (v.slashed and previous_epoch + 1 < v.withdrawable_epoch)
+        if is_active_validator(v, previous_epoch) or (is_slashed_attester(v) and previous_epoch + 1 < v.withdrawable_epoch)
     ]
 
 
@@ -1597,7 +1599,7 @@ def process_slashings(state: BeaconState) -> None:
         total_balance
     )
     for index, validator in enumerate(state.validators):
-        if validator.slashed and epoch + EPOCHS_PER_SLASHINGS_VECTOR // 2 == validator.withdrawable_epoch:
+        if is_slashed_attester(validator) and epoch + EPOCHS_PER_SLASHINGS_VECTOR // 2 == validator.withdrawable_epoch:
             increment = EFFECTIVE_BALANCE_INCREMENT  # Factored out from penalty numerator to avoid uint64 overflow
             penalty_numerator = validator.effective_balance // increment * adjusted_total_slashing_balance
             penalty = penalty_numerator // total_balance * increment
@@ -1697,7 +1699,7 @@ def process_block_header(state: BeaconState, block: BeaconBlock) -> None:
 
     # Verify proposer is not slashed
     proposer = state.validators[block.proposer_index]
-    assert not proposer.slashed
+    assert not is_slashed_proposer(proposer)
 
 
 def process_randao(state: BeaconState, body: BeaconBlockBody) -> None:
@@ -1786,7 +1788,7 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
     assert header_1 != header_2
     # Verify the proposer is slashable
     proposer = state.validators[header_1.proposer_index]
-    assert proposer.activation_epoch <= get_current_epoch(state) and proposer.exit_epoch != FAR_FUTURE_EPOCH
+    assert proposer.activation_epoch <= get_current_epoch(state) and not is_slashed_proposer(proposer)
     # Verify signatures
     for signed_header in (proposer_slashing.signed_header_1, proposer_slashing.signed_header_2):
         domain = get_domain(state, DOMAIN_BEACON_PROPOSER, compute_epoch_at_slot(signed_header.message.slot))
@@ -1797,6 +1799,7 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
     penalty = PROPOSER_EQUIVOCATION_PENALTY_FACTOR * EFFECTIVE_BALANCE_INCREMENT
     decrease_balance(state, header_1.proposer_index, penalty)
     initiate_validator_exit(state, header_1.proposer_index)
+    proposer.slashed = add_flag(proposer.slashed, SLASHED_PROPOSER_FLAG_INDEX)
 
     # Apply proposer and whistleblower rewards
     proposer_reward = Gwei((penalty // WHISTLEBLOWER_REWARD_QUOTIENT) * PROPOSER_WEIGHT // WEIGHT_DENOMINATOR)
@@ -1987,7 +1990,7 @@ def get_weight(store: Store, root: Root) -> Gwei:
     state = store.checkpoint_states[store.justified_checkpoint]
     unslashed_and_active_indices = [
         i for i in get_active_validator_indices(state, get_current_epoch(state))
-        if not state.validators[i].slashed
+        if not is_slashed_attester(state.validators[i])
     ]
     attestation_score = Gwei(sum(
         state.validators[i].effective_balance for i in unslashed_and_active_indices
@@ -2964,6 +2967,14 @@ def has_flag(flags: ParticipationFlags, flag_index: int) -> bool:
     return flags & flag == flag
 
 
+def is_slashed_proposer(validator: Validator) -> bool:
+    return has_flag(ParticipationFlags(validator.slashed), SLASHED_PROPOSER_FLAG_INDEX)
+
+
+def is_slashed_attester(validator: Validator) -> bool:
+    return has_flag(ParticipationFlags(validator.slashed), SLASHED_ATTESTER_FLAG_INDEX)
+
+
 def get_next_sync_committee_indices(state: BeaconState) -> Sequence[ValidatorIndex]:
     """
     Return the sync committee indices, with possible duplicates, for the next sync committee.
@@ -3012,7 +3023,7 @@ def get_unslashed_participating_indices(state: BeaconState, flag_index: int, epo
         epoch_participation = state.previous_epoch_participation
     active_validator_indices = get_active_validator_indices(state, epoch)
     participating_indices = [i for i in active_validator_indices if has_flag(epoch_participation[i], flag_index)]
-    return set(filter(lambda index: not state.validators[index].slashed, participating_indices))
+    return set(filter(lambda index: not is_slashed_attester(state.validators[index]), participating_indices))
 
 
 def get_attestation_participation_flag_indices(state: BeaconState,
