@@ -841,7 +841,7 @@ def is_eligible_for_activation(state: BeaconState, validator: Validator) -> bool
     )
 
 
-def is_slashable_validator(validator: Validator, epoch: Epoch) -> bool:
+def is_attester_slashable_validator(validator: Validator, epoch: Epoch) -> bool:
     """
     Check if ``validator`` is slashable.
     """
@@ -1816,7 +1816,7 @@ def process_attester_slashing(state: BeaconState, attester_slashing: AttesterSla
     slashed_any = False
     indices = set(attestation_1.attesting_indices).intersection(attestation_2.attesting_indices)
     for index in sorted(indices):
-        if is_slashable_validator(state.validators[index], get_current_epoch(state)):
+        if is_attester_slashable_validator(state.validators[index], get_current_epoch(state)):
             slash_validator(state, index)
             slashed_any = True
     assert slashed_any
