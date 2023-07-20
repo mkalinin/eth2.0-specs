@@ -1699,7 +1699,7 @@ def process_block_header(state: BeaconState, block: BeaconBlock) -> None:
 
     # Verify proposer is not slashed
     proposer = state.validators[block.proposer_index]
-    assert not is_slashed_proposer(proposer)
+    assert not is_slashed_proposer(proposer) and not is_slashed_attester(proposer)
 
 
 def process_randao(state: BeaconState, body: BeaconBlockBody) -> None:
