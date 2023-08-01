@@ -2436,9 +2436,9 @@ def is_aggregator(state: BeaconState, slot: Slot, index: CommitteeIndex, validat
     validator = state.validators[validator_index]
     committee = get_beacon_committee(state, slot, index)
     min_balance_increments = validator.effective_balance // MIN_ACTIVATION_BALANCE
-    committee_balance = get_total_balance(state, set(committee))
-    denominator = committee_balance ** min_balance_increments
-    numerator = denominator - (committee_balance -  TARGET_AGGREGATORS_PER_COMMITTEE * MIN_ACTIVATION_BALANCE) ** min_balance_increments
+    committee_balance_increments = get_total_balance(state, set(committee)) // MIN_ACTIVATION_BALANCE
+    denominator = committee_balance_increments ** min_balance_increments
+    numerator = denominator - (committee_balance_increments -  TARGET_AGGREGATORS_PER_COMMITTEE) ** min_balance_increments
     modulo = denominator // numerator
     return bytes_to_uint64(hash(slot_signature)[0:8]) % modulo == 0
 
