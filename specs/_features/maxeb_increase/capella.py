@@ -1634,9 +1634,7 @@ def process_effective_balance_updates(state: BeaconState) -> None:
         HYSTERESIS_INCREMENT = uint64(EFFECTIVE_BALANCE_INCREMENT // HYSTERESIS_QUOTIENT)
         DOWNWARD_THRESHOLD = HYSTERESIS_INCREMENT * HYSTERESIS_DOWNWARD_MULTIPLIER
         UPWARD_THRESHOLD = HYSTERESIS_INCREMENT * HYSTERESIS_UPWARD_MULTIPLIER
-        EFFECTIVE_BALANCE_LIMIT = MIN_ACTIVATION_BALANCE
-        if has_compounding_withdrawal_credential(validator):
-            EFFECTIVE_BALANCE_LIMIT = MAX_EFFECTIVE_BALANCE
+       EFFECTIVE_BALANCE_LIMIT = MAX_EFFECTIVE_BALANCE if has_compounding_withdrawal_credential(validator) else MIN_ACTIVATION_BALANCE
         if (
             balance + DOWNWARD_THRESHOLD < validator.effective_balance
             or validator.effective_balance + UPWARD_THRESHOLD < balance
