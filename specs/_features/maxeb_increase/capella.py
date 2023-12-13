@@ -1170,12 +1170,12 @@ def compute_exit_epoch_and_update_churn(state: BeaconState, exit_balance: Gwei) 
         state.exit_balance_to_consume = per_epoch_churn
 
     # Exit fits in the current earliest epoch.
-    if exit_balance < state.exit_balance_to_consume:
+    if exit_balance <= state.exit_balance_to_consume:
         state.exit_balance_to_consume -= exit_balance
     else: # Exit doesn't fit in the current earliest epoch.
         balance_to_process = exit_balance - state.exit_balance_to_consume
         additional_epochs, remainder = divmod(balance_to_process, per_epoch_churn)
-        state.earliest_exit_epoch += additional_epochs
+        state.earliest_exit_epoch += additional_epochs + 1
         state.exit_balance_to_consume = per_epoch_churn - remainder
     return state.earliest_exit_epoch
 
