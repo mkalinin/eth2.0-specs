@@ -1662,8 +1662,9 @@ def apply_pending_consolidation(state: BeaconState, pending_consolidation: Pendi
     if target_validator.exit_epoch != FAR_FUTURE_EPOCH:
         return
 
-    # Move active balance, use MIN_ACTIVATION_BALANCE ceil for validators with ETH1_ creds prefix
-    active_balance = min(state.balances[consolidation.source_index], MIN_ACTIVATION_BALANCE)
+    # Move active balance
+    active_balance_ceil = MIN_ACTIVATION_BALANCE if has_eth1_withdrawal_credential(source_validator) else MAX_EFFECTIVE_BALANCE
+    active_balance = min(state.balances[consolidation.source_index], active_balance_ceil)
     state.balances[consolidation.target_index] += active_balance
     state.balances[consolidation.source_index] = state.balances[consolidation.source_index] - active_balance
 
@@ -1672,7 +1673,7 @@ def apply_pending_consolidation(state: BeaconState, pending_consolidation: Pendi
     # Balance is not exiting the active set, do not apply churn
     source_validator.exit_epoch = get_current_epoch(state)
 
-    # Excess balance above current active balance ceil will be swept
+    # Excess balance above current active balance ceil will be withdrawn
     source_validator.withdrawable_epoch = Epoch(source_validator.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
 
 
@@ -2023,8 +2024,9 @@ def process_consolidation(state: BeaconState, signed_consolidation: SignedConsol
     assert source_validator.exit_epoch == FAR_FUTURE_EPOCH
     assert target_validator.exit_epoch == FAR_FUTURE_EPOCH
 
-    # Verify the source has ETH1 credentials
-    assert source_validator.withdrawal_credentials[:1] == ETH1_ADDRESS_WITHDRAWAL_PREFIX
+    # Verify the source and the target have Execution layer withdrawal credentials
+    assert source_validator.withdrawal_credentials[:1] in (ETH1_ADDRESS_WITHDRAWAL_PREFIX, COMPOUNDING_WITHDRAWAL_PREFIX)
+    assert target_validator.withdrawal_credentials[:1] in (ETH1_ADDRESS_WITHDRAWAL_PREFIX, COMPOUNDING_WITHDRAWAL_PREFIX)
     # Verify the same withdrawal address
     assert source_validator.withdrawal_credentials[1:] == target_validator.withdrawal_credentials[1:]
 
