@@ -236,7 +236,10 @@ PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX = uint64(3)
 MAX_BLS_TO_EXECUTION_CHANGES = 16
 MAX_WITHDRAWALS_PER_PAYLOAD = uint64(16)
 MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP = 16384
-
+DOMAIN_CONSOLIDATION = DomainType('0x0B000000')
+MAX_CONSOLIDATIONS = 4
+PENDING_CONSOLIDATIONS_LIMIT = uint64(1048576)  # MAX_CONSOLIDATIONS * SLOTS_PER_EPOCH * 8192
+UNSET_CONSOLIDATED_TO = ValidatorIndex(2**64 - 1)
 
 class Configuration(NamedTuple):
     PRESET_BASE: str
@@ -321,6 +324,8 @@ class Validator(Container):
     activation_epoch: Epoch
     exit_epoch: Epoch
     withdrawable_epoch: Epoch  # When validator can withdraw funds
+    # TODO: may compress into some other validator field
+    consolidated_to: ValidatorIndex
 
 
 class AttestationData(Container):
@@ -424,6 +429,22 @@ class VoluntaryExit(Container):
 class SignedVoluntaryExit(Container):
     message: VoluntaryExit
     signature: BLSSignature
+
+
+class Consolidation(Container):
+    source_index: ValidatorIndex
+    target_index: ValidatorIndex
+
+
+class SignedConsolidation(Container):
+    message: Consolidation
+    signature: BLSSignature
+
+
+class PendingConsolidation(Container):
+    source_index: ValidatorIndex
+    target_index: ValidatorIndex
+    epoch: Epoch
 
 
 class SignedBeaconBlockHeader(Container):
@@ -636,6 +657,8 @@ class BeaconBlockBody(Container):
     execution_payload: ExecutionPayload
     # Capella operations
     bls_to_execution_changes: List[SignedBLSToExecutionChange, MAX_BLS_TO_EXECUTION_CHANGES]  # [New in Capella]
+    # MAXEB operations
+    consolidations: List[SignedConsolidation, MAX_CONSOLIDATIONS]  # [New in MAXEB]
 
 
 class BeaconBlock(Container):
@@ -707,6 +730,7 @@ class BeaconState(Container):
     historical_summaries: List[HistoricalSummary, HISTORICAL_ROOTS_LIMIT]  # [New in Capella]
     pending_balance_deposits: List[PendingBalanceDeposit]
     pending_partial_withdrawals: List[PartialWithdrawal]
+    pending_consolidations: List[PendingConsolidation, PENDING_CONSOLIDATIONS_LIMIT]
 
 
 @dataclass(eq=True, frozen=True)
@@ -1327,6 +1351,7 @@ def process_epoch(state: BeaconState) -> None:
     process_slashings(state)
     process_eth1_data_reset(state)
     process_pending_balance_deposits(state)
+    process_pending_consolidations(state)
     process_effective_balance_updates(state)
     process_slashings_reset(state)
     process_randao_mixes_reset(state)
@@ -1627,6 +1652,42 @@ def process_pending_balance_deposits(state: BeaconState) -> None:
     state.pending_balance_deposits = state.pending_balance_deposits[next_pending_deposit_index:]
 
 
+def apply_pending_consolidation(state: BeaconState, pending_consolidation: PendingConsolidation) -> None:
+    target_validator = state[consolidation.target_index]
+    source_validator = state[consolidation.source_index]
+
+    # Ensure the source and the target exit statuses have not changed
+    if source_validator.exit_epoch != FAR_FUTURE_EPOCH:
+        return
+    if target_validator.exit_epoch != FAR_FUTURE_EPOCH:
+        return
+
+    # Move active balance, use MIN_ACTIVATION_BALANCE ceil for validators with ETH1_ creds prefix
+    active_balance = min(state.balances[consolidation.source_index], MIN_ACTIVATION_BALANCE)
+    state.balances[consolidation.target_index] += active_balance
+    state.balances[consolidation.source_index] = state.balances[consolidation.source_index] - active_balance
+
+    # Change the status of the source
+    source_validator.consolidated_to = consolidation.target_index
+    # Balance is not exiting the active set, do not apply churn
+    source_validator.exit_epoch = get_current_epoch(state)
+
+    # Excess balance above current active balance ceil will be swept
+    source_validator.withdrawable_epoch = Epoch(source_validator.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
+
+
+def process_pending_consolidations(state: BeaconState) -> None:
+    next_pending_consolidation = 0
+    for pending_consolidation in state.pending_consolidations:
+        if pending_consolidation.epoch >= state.finalized_checkpoint.epoch:
+            break
+
+        apply_pending_consolidation(state, pending_consolidation)
+        next_pending_consolidation += 1
+
+    state.pending_consolidations = state.pending_consolidations[next_pending_consolidation:]
+
+
 def process_effective_balance_updates(state: BeaconState) -> None:
     # Update effective balances with hysteresis
     for index, validator in enumerate(state.validators):
@@ -1735,6 +1796,7 @@ def process_operations(state: BeaconState, body: BeaconBlockBody) -> None:
     for_ops(body.voluntary_exits, process_voluntary_exit)
     for_ops(body.bls_to_execution_changes, process_bls_to_execution_change)  # [New in Capella]
     for_ops(body.execution_payload.withdraw_request, process_execution_layer_withdraw_request)
+    for_ops(body.consolidations, process_consolidation)
 
 
 def process_execution_layer_withdraw_request(
@@ -1784,11 +1846,13 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
     # Verify header slots match
     assert header_1.slot == header_2.slot
     # Verify header proposer indices match
-    assert header_1.proposer_index == header_2.proposer_index
+    header_1_proposer_index = resolve_consolidated_to(state, header_1.proposer_index)
+    header_2_proposer_index = resolve_consolidated_to(state, header_2.proposer_index)
+    assert header_1_proposer_index == header_2_proposer_index
     # Verify the headers are different
     assert header_1 != header_2
     # Verify the proposer is slashable
-    proposer = state.validators[header_1.proposer_index]
+    proposer = state.validators[header_1_proposer_index]
     assert proposer.activation_epoch <= get_current_epoch(state) and not is_slashed_proposer(proposer)
     # Verify signatures
     for signed_header in (proposer_slashing.signed_header_1, proposer_slashing.signed_header_2):
@@ -1798,8 +1862,8 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
 
     # Apply penalty
     penalty = PROPOSER_EQUIVOCATION_PENALTY_FACTOR * EFFECTIVE_BALANCE_INCREMENT
-    decrease_balance(state, header_1.proposer_index, penalty)
-    initiate_validator_exit(state, header_1.proposer_index)
+    decrease_balance(state, header_1_proposer_index, penalty)
+    initiate_validator_exit(state, header_1_proposer_index)
     proposer.slashed = add_flag(proposer.slashed, SLASHED_PROPOSER_FLAG_INDEX)
 
     # Apply proposer and whistleblower rewards
@@ -1815,7 +1879,8 @@ def process_attester_slashing(state: BeaconState, attester_slashing: AttesterSla
     assert is_valid_indexed_attestation(state, attestation_2)
 
     slashed_any = False
-    indices = set(attestation_1.attesting_indices).intersection(attestation_2.attesting_indices)
+    indices = set([resolve_consolidated_to(i) in attestation_1.attesting_indices]).intersection(
+                  [resolve_consolidated_to(i) in attestation_2.attesting_indices])
     for index in sorted(indices):
         if is_attester_slashable_validator(state.validators[index], get_current_epoch(state)):
             slash_validator(state, index)
@@ -1937,6 +2002,42 @@ def process_voluntary_exit(state: BeaconState, signed_voluntary_exit: SignedVolu
     assert bls.Verify(validator.pubkey, signing_root, signed_voluntary_exit.signature)
     # Initiate exit
     initiate_validator_exit(state, voluntary_exit.validator_index)
+
+
+def resolve_consolidated_to(state: BeaconState, index: ValidatorIndex) -> ValidatorIndex:
+     if state.validators[index].consolidated_to != UNSET_CONSOLIDATED_TO:
+         # Recursively resolve consolidated index
+         return resolve_consolidated_to(state, state.validators[index].consolidated_to)
+     else:
+         return index
+
+
+def process_consolidation(state: BeaconState, signed_consolidation: SignedConsolidation) -> None:
+    consolidation = signed_consolidation.message
+    target_validator = state[consolidation.target_index]
+    source_validator = state[consolidation.source_index]
+
+    # Verify the source and the target are active and not yet exited
+    assert is_active_validator(source_validator)
+    assert is_active_validator(target_validator)
+    assert source_validator.exit_epoch == FAR_FUTURE_EPOCH
+    assert target_validator.exit_epoch == FAR_FUTURE_EPOCH
+
+    # Verify the source has ETH1 credentials
+    assert source_validator.withdrawal_credentials[:1] == ETH1_ADDRESS_WITHDRAWAL_PREFIX
+    # Verify the same withdrawal address
+    assert source_validator.withdrawal_credentials[1:] == target_validator.withdrawal_credentials[1:]
+
+    # Verify consolidation is signed by the source and the target
+    domain = compute_domain(DOMAIN_CONSOLIDATION, genesis_validators_root=state.genesis_validators_root)
+    signing_root = compute_signing_root(consolidation, domain)
+    pubkeys = [source_validator.pubkey, target_validator.pubkey]
+    assert bls.FastAggregateVerify(pubkeys, signing_root, signed_consolidation.signature)
+
+    # Queue consolidation for further processing
+    state.pending_consolidations.append(PendingConsolidation(source_index = consolidation.source_index,
+                                                             target_index = consolidation.target_index,
+                                                             epoch = get_current_epoch(state)))
 
 
 def is_previous_epoch_justified(store: Store) -> bool:
