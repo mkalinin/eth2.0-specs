@@ -1653,28 +1653,68 @@ def process_pending_balance_deposits(state: BeaconState) -> None:
 
 
 def apply_pending_consolidation(state: BeaconState, pending_consolidation: PendingConsolidation) -> None:
-    target_validator = state.validators[pending_consolidation.target_index]
+    current_epoch = get_current_epoch(state)
+
+    # Resolve the target of consolidation
+    target_index = resolve_consolidated_to(state, pending_consolidation.target_index)
+    target_validator = state.validators[target_index]
     source_validator = state.validators[pending_consolidation.source_index]
 
-    # Ensure the source and the target exit statuses have not changed
-    if source_validator.exit_epoch != FAR_FUTURE_EPOCH:
+    # Apply consolidation
+    source_validator.consolidated_to = target_index
+
+    # Don't move the balance and slash the target if the source was slashed
+    if is_slashed(source_validator):
+        if is_slashed_proposer(source_validator):
+            penalty = PROPOSER_EQUIVOCATION_PENALTY_FACTOR * EFFECTIVE_BALANCE_INCREMENT
+            decrease_balance(state, target_validator, penalty)
+            initiate_validator_exit(state, target_index)
+            target_validator.slashed = add_flag(target_validator.slashed, SLASHED_PROPOSER_FLAG_INDEX)
+
+        if is_slashed_attester(source_validator):
+            if is_attester_slashable_validator(target_validator, current_epoch):
+                slash_validator(state, target_index)
+
         return
-    if target_validator.exit_epoch != FAR_FUTURE_EPOCH:
+
+    # Don't move the balance and slash the source if the target was slashed
+    if is_slashed(target_validator):
+        if is_slashed_proposer(target_validator):
+            penalty = PROPOSER_EQUIVOCATION_PENALTY_FACTOR * EFFECTIVE_BALANCE_INCREMENT
+            decrease_balance(state, source_validator, penalty)
+            initiate_validator_exit(state, pending_consolidation.source_index)
+            source_validator.slashed = add_flag(source_validator.slashed, SLASHED_PROPOSER_FLAG_INDEX)
+
+        if is_slashed_attester(target_validator):
+            if is_attester_slashable_validator(source_validator, current_epoch):
+                slash_validator(state, pending_consolidation.source_index)
+
+        return
+
+    # Don't move the balance if the source withdrew
+    if source_validator.withdrawable_epoch < current_epoch:
         return
 
     # Move active balance
     active_balance_ceil = MIN_ACTIVATION_BALANCE if has_eth1_withdrawal_credential(source_validator) else MAX_EFFECTIVE_BALANCE
     active_balance = min(state.balances[pending_consolidation.source_index], active_balance_ceil)
-    state.balances[pending_consolidation.target_index] += active_balance
+    state.balances[target_index] += active_balance
+    # Excess balance above current active balance ceil will be withdrawn
     state.balances[pending_consolidation.source_index] = state.balances[pending_consolidation.source_index] - active_balance
 
-    # Change the status of the source
-    source_validator.consolidated_to = consolidation.target_index
-    # Balance is not exiting the active set, do not apply churn
-    source_validator.exit_epoch = get_current_epoch(state)
+    # Update target exit and withdrawable epochs if the target exited
+    if target_validator.exit_epoch != FAR_FUTURE_EPOCH:
+        target_validator.exit_epoch = compute_exit_epoch_and_update_churn(state, active_balance)
+        target_validator.withdrawable_epoch = Epoch(target_validator.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
 
-    # Excess balance above current active balance ceil will be withdrawn
-    source_validator.withdrawable_epoch = Epoch(source_validator.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
+    # Balance is not exiting the active set, do not apply churn
+    if source_validator.exit_epoch > current_epoch:
+        source_validator.exit_epoch = current_epoch
+
+    # Reset withdrawable epoch when it is closer than expected
+    withdrawable_epoch = Epoch(source_validator.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
+    if source_validator.withdrawable_epoch < withdrawable_epoch:
+        source_validator.withdrawable_epoch = withdrawable_epoch
 
 
 def process_pending_consolidations(state: BeaconState) -> None:
@@ -2037,9 +2077,10 @@ def process_consolidation(state: BeaconState, signed_consolidation: SignedConsol
     assert bls.FastAggregateVerify(pubkeys, signing_root, signed_consolidation.signature)
 
     # Queue consolidation for further processing
+    consolidation_epoch = compute_activation_exit_epoch(get_current_epoch(state))
     state.pending_consolidations.append(PendingConsolidation(source_index = consolidation.source_index,
                                                              target_index = consolidation.target_index,
-                                                             epoch = get_current_epoch(state)))
+                                                             epoch = consolidation_epoch))
 
 
 def is_previous_epoch_justified(store: Store) -> bool:
@@ -3077,6 +3118,10 @@ def is_slashed_proposer(validator: Validator) -> bool:
 
 def is_slashed_attester(validator: Validator) -> bool:
     return has_flag(ParticipationFlags(validator.slashed), SLASHED_ATTESTER_FLAG_INDEX)
+
+
+def is_slashed(validator: Validator) -> bool:
+    return is_slashed_attester(validator) or is_slashed_proposer(validator)
 
 
 def get_next_sync_committee_indices(state: BeaconState) -> Sequence[ValidatorIndex]:
