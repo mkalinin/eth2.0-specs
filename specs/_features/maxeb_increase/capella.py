@@ -1653,8 +1653,8 @@ def process_pending_balance_deposits(state: BeaconState) -> None:
 
 
 def apply_pending_consolidation(state: BeaconState, pending_consolidation: PendingConsolidation) -> None:
-    target_validator = state[consolidation.target_index]
-    source_validator = state[consolidation.source_index]
+    target_validator = state.validators[pending_consolidation.target_index]
+    source_validator = state.validators[pending_consolidation.source_index]
 
     # Ensure the source and the target exit statuses have not changed
     if source_validator.exit_epoch != FAR_FUTURE_EPOCH:
@@ -1664,9 +1664,9 @@ def apply_pending_consolidation(state: BeaconState, pending_consolidation: Pendi
 
     # Move active balance
     active_balance_ceil = MIN_ACTIVATION_BALANCE if has_eth1_withdrawal_credential(source_validator) else MAX_EFFECTIVE_BALANCE
-    active_balance = min(state.balances[consolidation.source_index], active_balance_ceil)
-    state.balances[consolidation.target_index] += active_balance
-    state.balances[consolidation.source_index] = state.balances[consolidation.source_index] - active_balance
+    active_balance = min(state.balances[pending_consolidation.source_index], active_balance_ceil)
+    state.balances[pending_consolidation.target_index] += active_balance
+    state.balances[pending_consolidation.source_index] = state.balances[pending_consolidation.source_index] - active_balance
 
     # Change the status of the source
     source_validator.consolidated_to = consolidation.target_index
@@ -1880,8 +1880,8 @@ def process_attester_slashing(state: BeaconState, attester_slashing: AttesterSla
     assert is_valid_indexed_attestation(state, attestation_2)
 
     slashed_any = False
-    indices = set([resolve_consolidated_to(i) in attestation_1.attesting_indices]).intersection(
-                  [resolve_consolidated_to(i) in attestation_2.attesting_indices])
+    indices = set([resolve_consolidated_to(i) for i in attestation_1.attesting_indices]).intersection(
+                  [resolve_consolidated_to(i) for i in attestation_2.attesting_indices])
     for index in sorted(indices):
         if is_attester_slashable_validator(state.validators[index], get_current_epoch(state)):
             slash_validator(state, index)
@@ -2015,8 +2015,8 @@ def resolve_consolidated_to(state: BeaconState, index: ValidatorIndex) -> Valida
 
 def process_consolidation(state: BeaconState, signed_consolidation: SignedConsolidation) -> None:
     consolidation = signed_consolidation.message
-    target_validator = state[consolidation.target_index]
-    source_validator = state[consolidation.source_index]
+    target_validator = state.validators[consolidation.target_index]
+    source_validator = state.validators[consolidation.source_index]
 
     # Verify the source and the target are active and not yet exited
     assert is_active_validator(source_validator)
