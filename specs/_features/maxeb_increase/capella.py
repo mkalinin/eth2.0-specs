@@ -236,6 +236,9 @@ PROPORTIONAL_SLASHING_MULTIPLIER_BELLATRIX = uint64(3)
 MAX_BLS_TO_EXECUTION_CHANGES = 16
 MAX_WITHDRAWALS_PER_PAYLOAD = uint64(16)
 MAX_VALIDATORS_PER_WITHDRAWALS_SWEEP = 16384
+DOMAIN_CONSOLIDATION = DomainType('0x0B000000')
+MAX_CONSOLIDATIONS = 4
+PENDING_CONSOLIDATIONS_LIMIT = uint64(1048576)  # MAX_CONSOLIDATIONS * SLOTS_PER_EPOCH * 8192
 
 
 class Configuration(NamedTuple):
@@ -424,6 +427,22 @@ class VoluntaryExit(Container):
 class SignedVoluntaryExit(Container):
     message: VoluntaryExit
     signature: BLSSignature
+
+
+class Consolidation(Container):
+    source_index: ValidatorIndex
+    target_index: ValidatorIndex
+
+
+class SignedConsolidation(Container):
+    message: Consolidation
+    signature: BLSSignature
+
+
+class PendingConsolidation(Container):
+    source_index: ValidatorIndex
+    target_index: ValidatorIndex
+    epoch: Epoch
 
 
 class SignedBeaconBlockHeader(Container):
@@ -636,6 +655,8 @@ class BeaconBlockBody(Container):
     execution_payload: ExecutionPayload
     # Capella operations
     bls_to_execution_changes: List[SignedBLSToExecutionChange, MAX_BLS_TO_EXECUTION_CHANGES]  # [New in Capella]
+    # MAXEB operations
+    consolidations: List[SignedConsolidation, MAX_CONSOLIDATIONS]  # [New in MAXEB]
 
 
 class BeaconBlock(Container):
@@ -707,6 +728,7 @@ class BeaconState(Container):
     historical_summaries: List[HistoricalSummary, HISTORICAL_ROOTS_LIMIT]  # [New in Capella]
     pending_balance_deposits: List[PendingBalanceDeposit]
     pending_partial_withdrawals: List[PartialWithdrawal]
+    pending_consolidations: List[PendingConsolidation, PENDING_CONSOLIDATIONS_LIMIT]
 
 
 @dataclass(eq=True, frozen=True)
@@ -1326,6 +1348,7 @@ def process_epoch(state: BeaconState) -> None:
     process_registry_updates(state)
     process_slashings(state)
     process_eth1_data_reset(state)
+    process_pending_consolidations(state)
     process_pending_balance_deposits(state)
     process_effective_balance_updates(state)
     process_slashings_reset(state)
@@ -1613,6 +1636,34 @@ def process_eth1_data_reset(state: BeaconState) -> None:
         state.eth1_data_votes = []
 
 
+def apply_pending_consolidation(state: BeaconState, pending_consolidation: PendingConsolidation) -> None:
+    source_validator = state.validators[pending_consolidation.source_index]
+
+    # Cancel consolidation if the source was slashed
+    if is_slashed_proposer(source_validator) or is_slashed_attester(source_validator):
+        return
+
+    # Excess balance above current active balance ceil will be withdrawn
+    active_balance_ceil = MIN_ACTIVATION_BALANCE if has_eth1_withdrawal_credential(source_validator) else MAX_EFFECTIVE_BALANCE
+    active_balance = min(state.balances[pending_consolidation.source_index], active_balance_ceil)
+    state.balances[pending_consolidation.source_index] = state.balances[pending_consolidation.source_index] - active_balance
+    # Add active balance to the activation churn
+    state.pending_balance_deposits.append(PendingBalanceDeposit(pending_consolidation.target_index, active_balance))
+
+
+def process_pending_consolidations(state: BeaconState) -> None:
+    current_epoch = get_current_epoch(state)
+    next_pending_consolidation = 0
+    for pending_consolidation in state.pending_consolidations:
+        if pending_consolidation.epoch == current_epoch:
+            break
+
+        apply_pending_consolidation(state, pending_consolidation)
+        next_pending_consolidation += 1
+
+    state.pending_consolidations = state.pending_consolidations[next_pending_consolidation:]
+
+
 def process_pending_balance_deposits(state: BeaconState) -> None:
     state.deposit_balance_to_consume += get_validator_churn_limit(state)
     next_pending_deposit_index = 0
@@ -1735,6 +1786,7 @@ def process_operations(state: BeaconState, body: BeaconBlockBody) -> None:
     for_ops(body.voluntary_exits, process_voluntary_exit)
     for_ops(body.bls_to_execution_changes, process_bls_to_execution_change)  # [New in Capella]
     for_ops(body.execution_payload.withdraw_request, process_execution_layer_withdraw_request)
+    for_ops(body.consolidations, process_consolidation)  # [New in MAXEB]
 
 
 def process_execution_layer_withdraw_request(
@@ -1937,6 +1989,39 @@ def process_voluntary_exit(state: BeaconState, signed_voluntary_exit: SignedVolu
     assert bls.Verify(validator.pubkey, signing_root, signed_voluntary_exit.signature)
     # Initiate exit
     initiate_validator_exit(state, voluntary_exit.validator_index)
+
+
+def process_consolidation(state: BeaconState, signed_consolidation: SignedConsolidation) -> None:
+    consolidation = signed_consolidation.message
+    target_validator = state.validators[consolidation.target_index]
+    source_validator = state.validators[consolidation.source_index]
+
+    # Verify the source and the target are active and not yet exited
+    assert is_active_validator(source_validator)
+    assert is_active_validator(target_validator)
+    assert source_validator.exit_epoch == FAR_FUTURE_EPOCH
+    assert target_validator.exit_epoch == FAR_FUTURE_EPOCH
+
+    # Verify the source and the target have Execution layer withdrawal credentials
+    assert source_validator.withdrawal_credentials[:1] in (ETH1_ADDRESS_WITHDRAWAL_PREFIX, COMPOUNDING_WITHDRAWAL_PREFIX)
+    assert target_validator.withdrawal_credentials[:1] in (ETH1_ADDRESS_WITHDRAWAL_PREFIX, COMPOUNDING_WITHDRAWAL_PREFIX)
+    # Verify the same withdrawal address
+    assert source_validator.withdrawal_credentials[1:] == target_validator.withdrawal_credentials[1:]
+
+    # Verify consolidation is signed by the source and the target
+    domain = compute_domain(DOMAIN_CONSOLIDATION, genesis_validators_root=state.genesis_validators_root)
+    signing_root = compute_signing_root(consolidation, domain)
+    pubkeys = [source_validator.pubkey, target_validator.pubkey]
+    assert bls.FastAggregateVerify(pubkeys, signing_root, signed_consolidation.signature)
+
+    # Exit source bypassing the exit churn
+    source.exit_epoch = compute_activation_exit_epoch(get_current_epoch(state))
+    source.withdrawable_epoch = Epoch(source.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
+
+    # Queue consolidation for further processing
+    state.pending_consolidations.append(PendingConsolidation(source_index = consolidation.source_index,
+                                                             target_index = consolidation.target_index,
+                                                             epoch = source.withdrawable_epoch))
 
 
 def is_previous_epoch_justified(store: Store) -> bool:
