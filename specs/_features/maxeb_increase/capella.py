@@ -2015,8 +2015,8 @@ def process_consolidation(state: BeaconState, signed_consolidation: SignedConsol
     assert bls.FastAggregateVerify(pubkeys, signing_root, signed_consolidation.signature)
 
     # Exit source bypassing the exit churn
-    source.exit_epoch = compute_activation_exit_epoch(get_current_epoch(state))
-    source.withdrawable_epoch = Epoch(source.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
+    source_validator.exit_epoch = compute_activation_exit_epoch(get_current_epoch(state))
+    source_validator.withdrawable_epoch = Epoch(source_validator.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
 
     # Queue consolidation for further processing
     state.pending_consolidations.append(PendingConsolidation(source_index = consolidation.source_index,
