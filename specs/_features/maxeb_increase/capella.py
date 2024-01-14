@@ -1656,24 +1656,27 @@ def apply_pending_consolidation(state: BeaconState, pending_consolidation: Pendi
     current_epoch = get_current_epoch(state)
 
     # Resolve the target of consolidation
-    target_index = resolve_consolidated_to(state, pending_consolidation.target_index)
-    target_validator = state.validators[target_index]
+    target_validator = state.validators[pending_consolidation.target_index]
     source_validator = state.validators[pending_consolidation.source_index]
 
+    # Abort consolidation if the target has been consolidated
+    if target_validator.consolidated_to != UNSET_CONSOLIDATED_TO:
+        return
+
     # Apply consolidation
-    source_validator.consolidated_to = target_index
+    source_validator.consolidated_to = pending_consolidation.target_index
 
     # Don't move the balance and slash the target if the source was slashed
     if is_slashed(source_validator):
         if is_slashed_proposer(source_validator):
             penalty = PROPOSER_EQUIVOCATION_PENALTY_FACTOR * EFFECTIVE_BALANCE_INCREMENT
             decrease_balance(state, target_validator, penalty)
-            initiate_validator_exit(state, target_index)
+            initiate_validator_exit(state, pending_consolidation.target_index)
             target_validator.slashed = add_flag(target_validator.slashed, SLASHED_PROPOSER_FLAG_INDEX)
 
         if is_slashed_attester(source_validator):
             if is_attester_slashable_validator(target_validator, current_epoch):
-                slash_validator(state, target_index)
+                slash_validator(state, pending_consolidation.target_index)
 
         return
 
@@ -1698,7 +1701,7 @@ def apply_pending_consolidation(state: BeaconState, pending_consolidation: Pendi
     # Move active balance
     active_balance_ceil = MIN_ACTIVATION_BALANCE if has_eth1_withdrawal_credential(source_validator) else MAX_EFFECTIVE_BALANCE
     active_balance = min(state.balances[pending_consolidation.source_index], active_balance_ceil)
-    state.balances[target_index] += active_balance
+    state.balances[pending_consolidation.target_index] += active_balance
     # Excess balance above current active balance ceil will be withdrawn
     state.balances[pending_consolidation.source_index] = state.balances[pending_consolidation.source_index] - active_balance
 
