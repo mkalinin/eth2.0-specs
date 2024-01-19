@@ -252,7 +252,8 @@ class Configuration(NamedTuple):
     SHARD_COMMITTEE_PERIOD: uint64
     ETH1_FOLLOW_DISTANCE: uint64
     EJECTION_BALANCE: Gwei
-    MIN_PER_EPOCH_CHURN_LIMIT: uint64
+    MIN_PER_EPOCH_CHURN_LIMIT: Gwei
+    MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT: Gwei
     CHURN_LIMIT_QUOTIENT: uint64
     PROPOSER_SCORE_BOOST: uint64
     INACTIVITY_SCORE_BIAS: uint64
@@ -266,8 +267,8 @@ class Configuration(NamedTuple):
     BELLATRIX_FORK_EPOCH: Epoch
     CAPELLA_FORK_VERSION: Version
     CAPELLA_FORK_EPOCH: Epoch
-    
 
+    
 
 config = Configuration(
     PRESET_BASE="mainnet",
@@ -281,7 +282,8 @@ config = Configuration(
     SHARD_COMMITTEE_PERIOD=uint64(256),
     ETH1_FOLLOW_DISTANCE=uint64(2048),
     EJECTION_BALANCE=Gwei(16000000000),
-    MIN_PER_EPOCH_CHURN_LIMIT=uint64(4),
+    MIN_PER_EPOCH_CHURN_LIMIT=uint64(128),
+    MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT=uint64(256),
     CHURN_LIMIT_QUOTIENT=uint64(65536),
     PROPOSER_SCORE_BOOST=uint64(40),
     INACTIVITY_SCORE_BIAS=uint64(4),
@@ -697,9 +699,9 @@ class BeaconState(Container):
     validators: List[Validator, VALIDATOR_REGISTRY_LIMIT]
     balances: List[Gwei, VALIDATOR_REGISTRY_LIMIT]
     deposit_balance_to_consume: Gwei
-    exit_balance_to_consume: Gwei  # Should be initialized with get_validator_churn_limit(state)
+    exit_balance_to_consume: Gwei  # Should be initialized with get_churn_limit(state)
     earliest_exit_epoch: Epoch  # Should be initialized with the max([v.exit_epoch for v in state.validators if v.exit_epoch != FAR_FUTURE_EPOCH]) + 1
-    consolidation_balance_to_consume: Gwei
+    consolidation_balance_to_consume: Gwei # Should be initialized with get_consolidation_churn_limit(state)
     earliest_consolidation_epoch: Epoch
     # Randomness
     randao_mixes: Vector[Bytes32, EPOCHS_PER_HISTORICAL_VECTOR]
@@ -1062,6 +1064,8 @@ def get_randao_mix(state: BeaconState, epoch: Epoch) -> Bytes32:
     return state.randao_mixes[epoch % EPOCHS_PER_HISTORICAL_VECTOR]
 
 
+
+
 def get_active_validator_indices(state: BeaconState, epoch: Epoch) -> Sequence[ValidatorIndex]:
     """
     Return the sequence of active validator indices at ``epoch``.
@@ -1069,17 +1073,23 @@ def get_active_validator_indices(state: BeaconState, epoch: Epoch) -> Sequence[V
     return [ValidatorIndex(i) for i, v in enumerate(state.validators) if is_active_validator(v, epoch)]
 
 
-def get_validator_churn_limit(state: BeaconState) -> Gwei:
+def get_churn_limit(state: BeaconState) -> Gwei:
     """
-    Return the validator churn limit for the current epoch.
+    Return the churn limit for the current epoch.
     """
-    churn = max(config.MIN_PER_EPOCH_CHURN_LIMIT * MIN_ACTIVATION_BALANCE, get_total_active_balance(state) // config.CHURN_LIMIT_QUOTIENT)
+    churn = max(config.MIN_PER_EPOCH_CHURN_LIMIT, 
+                get_total_active_balance(state) // config.CHURN_LIMIT_QUOTIENT)
     return churn - churn % EFFECTIVE_BALANCE_INCREMENT
+
+def get_activation_exit_churn_limit(state: BeaconState) -> Gwei:
+    """
+    Return the churn limit for the current epoch dedicated to activations and exits.
+    """
+    return min(config.MAX_PER_EPOCH_ACTIVATION_EXIT_CHURN_LIMIT, get_churn_limit(state))
 
 def get_consolidation_churn_limit(state: BeaconState) -> Gwei:
-    churn = config.MIN_PER_EPOCH_CHURN_LIMIT * MIN_ACTIVATION_BALANCE
-    return churn - churn % EFFECTIVE_BALANCE_INCREMENT
-
+    return get_churn_limit(state) - get_activation_exit_churn_limit(state)
+    
 
 def get_seed(state: BeaconState, epoch: Epoch, domain_type: DomainType) -> Bytes32:
     """
@@ -1188,7 +1198,7 @@ def decrease_balance(state: BeaconState, index: ValidatorIndex, delta: Gwei) -> 
 
 def compute_exit_epoch_and_update_churn(state: BeaconState, exit_balance: Gwei) -> Epoch:
     earliest_exit_epoch = compute_activation_exit_epoch(get_current_epoch(state))
-    per_epoch_churn = get_validator_churn_limit(state)
+    per_epoch_churn = get_activation_exit_churn_limit(state)
     # New epoch for exits.
     if state.earliest_exit_epoch < earliest_exit_epoch:
         state.earliest_exit_epoch = earliest_exit_epoch
@@ -1211,7 +1221,6 @@ def compute_consolidation_epoch_and_update_churn(state: BeaconState, consolidati
     if state.earliest_consolidation_epoch < earliest_consolidation_epoch:
         state.earliest_consolidation_epoch = earliest_consolidation_epoch
         state.consolidation_balance_to_consume = per_epoch_consolidation_churn
-
     # Consolidation fits in the current earliest consolidation epoch.
     if consolidation_balance <= state.consolidation_balance_to_consume:
         state.consolidation_balance_to_consume -= consolidation_balance
@@ -1657,7 +1666,7 @@ def process_eth1_data_reset(state: BeaconState) -> None:
 
 
 def process_pending_balance_deposits(state: BeaconState) -> None:
-    state.deposit_balance_to_consume += get_validator_churn_limit(state)
+    state.deposit_balance_to_consume += get_activation_exit_churn_limit(state)
     next_pending_deposit_index = 0
     for pending_balance_deposit in state.pending_balance_deposits:
         if state.deposit_balance_to_consume < pending_balance_deposit.amount:
@@ -1677,7 +1686,7 @@ def get_active_balance(state: BeaconState, validator: Validator) -> Gwei:
 def apply_pending_consolidation(state: BeaconState, pending_consolidation: PendingConsolidation) -> None:
     source_validator = state.validators[pending_consolidation.source_index]
     target_validator = state.validators[pending_consolidation.target_index]
-    # Move consolidation balance to target. Excess balance will be withdrawn.
+    # Move active balance to target. Excess balance will be withdrawn.
     active_balance = get_active_balance(state, source_validator)
     state.balances[source_validator.index] -= active_balance
     state.balances[target_validator.index] += active_balance
@@ -2038,7 +2047,7 @@ def process_consolidation(state: BeaconState, signed_consolidation: SignedConsol
 
     # Initiate source validator exit and append pending consolidation
     active_balance = get_active_balance(state, source_validator)
-    source_validator.exit_epoch = compute_consolidation_epoch_and_update_churn(state, 2 * active_balance)
+    source_validator.exit_epoch = compute_consolidation_epoch_and_update_churn(state, active_balance)
     source_validator.withdrawable_epoch = Epoch(source_validator.exit_epoch + config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY)
     state.pending_consolidations.append(PendingConsolidation(source_index = source_validator.index,
                                                              target_index = target_validator.index))
