@@ -1696,13 +1696,12 @@ def process_pending_consolidations(state: BeaconState) -> None:
     next_pending_consolidation = 0
     for pending_consolidation in state.pending_consolidations:
         source_validator = state.validators[pending_consolidation.source_index]
-        if source_validator.slashed:
-            next_pending_consolidation += 1
-            continue
         if source_validator.withdrawable_epoch > get_current_epoch(state):
             break
 
-        apply_pending_consolidation(state, pending_consolidation)
+        if not source_validator.slashed:
+            apply_pending_consolidation(state, pending_consolidation)
+
         next_pending_consolidation += 1
 
     state.pending_consolidations = state.pending_consolidations[next_pending_consolidation:]
