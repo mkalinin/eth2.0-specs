@@ -2024,6 +2024,7 @@ def process_voluntary_exit(state: BeaconState, signed_voluntary_exit: SignedVolu
 
 
 def process_consolidation(state: BeaconState, signed_consolidation: SignedConsolidation) -> None:
+    assert(len(state.pending_consolidations) < PENDING_CONSOLIDATIONS_LIMIT)
     consolidation = signed_consolidation.message
     target_validator = state.validators[consolidation.target_index]
     source_validator = state.validators[consolidation.source_index]
