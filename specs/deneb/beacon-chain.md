@@ -11,7 +11,6 @@
 - [Introduction](#introduction)
 - [Custom types](#custom-types)
 - [Constants](#constants)
-  - [Domain types](#domain-types)
   - [Blob](#blob)
 - [Preset](#preset)
   - [Execution](#execution)
@@ -67,17 +66,10 @@ Deneb is a consensus-layer upgrade containing a number of features. Including:
 
 ## Constants
 
-### Domain types
-
-| Name | Value |
-| - | - |
-| `DOMAIN_BLOB_SIDECAR` | `DomainType('0x0B000000')` |
-
 ### Blob
 
 | Name | Value |
 | - | - |
-| `BLOB_TX_TYPE` | `uint8(0x03)` |
 | `VERSIONED_HASH_VERSION_KZG` | `Bytes1('0x01')` |
 
 ## Preset
