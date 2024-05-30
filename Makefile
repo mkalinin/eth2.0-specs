@@ -35,7 +35,7 @@ MARKDOWN_FILES = $(wildcard $(SPEC_DIR)/*/*.md) \
                  $(wildcard $(SPEC_DIR)/_features/*/*/*.md) \
                  $(wildcard $(SSZ_DIR)/*.md)
 
-ALL_EXECUTABLE_SPEC_NAMES = phase0 altair bellatrix capella deneb eip6110 eip7002 whisk
+ALL_EXECUTABLE_SPEC_NAMES = phase0 altair bellatrix capella deneb electra whisk
 # The parameters for commands. Use `foreach` to avoid listing specs again.
 COVERAGE_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPEC_NAMES), --cov=eth2spec.$S.$(TEST_PRESET_TYPE))
 PYLINT_SCOPE := $(foreach S,$(ALL_EXECUTABLE_SPEC_NAMES), ./eth2spec/$S)
@@ -107,13 +107,13 @@ pyspec:
 
 # check the setup tool requirements
 preinstallation:
-	python3 -m venv venv; . venv/bin/activate; \
+	python3 -m venv venv && \
+	. venv/bin/activate && \
 	python3 -m pip install -r requirements_preinstallation.txt
 
-# installs the packages to run pyspec tests
 install_test: preinstallation
-	python3 -m venv venv; . venv/bin/activate; \
-	python3 -m pip install -e .[lint]; python3 -m pip install -e .[test]
+	. venv/bin/activate && \
+	python3 -m pip install -e .[lint,test]
 
 # Testing against `minimal` or `mainnet` config by default
 test: pyspec
@@ -244,5 +244,5 @@ build_docs: copy_docs
 	mkdocs build
 
 serve_docs:
-	. venv/bin/activate; 
+	. venv/bin/activate;
 	mkdocs serve
