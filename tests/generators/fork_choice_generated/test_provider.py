@@ -172,15 +172,13 @@ def yield_test_parts(spec, store, test_data: FCTestData, events):
                             elif event_kind == 'block':
                                 assert recovery
                                 _block_id = get_block_file_name(event_data)
-                                print('recovered block', _block_id)
-                                test_steps.append({'block': _block_id, 'valid': True, 'recovery': True})
+                                test_steps.append({'block': _block_id, 'valid': True})
                             elif event_kind == 'attestation':
                                 assert recovery
                                 _attestation_id = get_attestation_file_name(event_data)
                                 if _attestation_id not in test_data.atts:
                                     yield _attestation_id, event_data
-                                print('recovered attestation', _attestation_id)
-                                test_steps.append({'attestation': _attestation_id, 'valid': True, 'recovery': True})
+                                test_steps.append({'attestation': _attestation_id, 'valid': True})
                             else:
                                 assert False
                     else:
@@ -201,17 +199,15 @@ def yield_test_parts(spec, store, test_data: FCTestData, events):
                             if event_kind == 'block':
                                 _block_id = get_block_file_name(event_data)
                                 if recovery:
-                                    print('recovered block', _block_id)
-                                    test_steps.append({'block': _block_id, 'valid': True, 'recovery': True})
+                                    test_steps.append({'block': _block_id, 'valid': True})
                                 else:
                                     test_steps.append({'block': _block_id, 'valid': True})
                             elif event_kind == 'attestation':
                                 _attestation_id = get_attestation_file_name(event_data)
                                 if recovery:
-                                    print('recovered attestation', _attestation_id)
                                     if _attestation_id not in test_data.atts:
                                         yield _attestation_id, event_data
-                                    test_steps.append({'attestation': _attestation_id, 'valid': True, 'recovery': True})
+                                    test_steps.append({'attestation': _attestation_id, 'valid': True})
                                 else:
                                     assert False
                                     test_steps.append({'attestation': _attestation_id, 'valid': True})
@@ -242,7 +238,8 @@ def yield_test_parts(spec, store, test_data: FCTestData, events):
             else:
                 raise ValueError(f'not implemented {kind}')
         next_slot_time = store.genesis_time + (spec.get_current_slot(store) + 1) * spec.config.SECONDS_PER_SLOT
-        on_tick_and_append_step(spec, store, next_slot_time, test_steps, checks_with_viable_for_head_weights=True)
+        on_tick_and_append_step(spec, store, next_slot_time, test_steps)
+        output_store_checks(spec, store, test_steps, with_viable_for_head_weights=True)
 
         yield 'steps', test_steps
 
