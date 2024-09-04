@@ -351,7 +351,7 @@ def _generate_sm_link_tree(spec, genesis_state, sm_links, rnd: random.Random, de
                     for a in new_branch_tip.attestations:
                         if a.data.target.epoch == current_epoch:
                             attesters.update(
-                                spec.get_attesting_indices(current_epoch_state, a.data, a.aggregation_bits))
+                                spec.get_attesting_indices(current_epoch_state, a))
                     unexpected_attesters = attesters.difference(branch_tip.participants)
                     assert len(unexpected_attesters) == 0, \
                         'Unexpected attester: ' + str(unexpected_attesters.pop()) + ', slot ' + str(b.message.slot)
