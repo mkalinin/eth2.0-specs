@@ -1777,6 +1777,18 @@ def is_valid_switch_to_compounding_request(
     return True
 ```
 
+###### New `get_pending_balance_to_consolidate`
+
+```python
+def get_pending_balance_to_consolidate(state: BeaconState, target_index: ValidatorIndex) -> Gwei:
+    pending_balance_to_consolidate = Gwei(0)
+    for pending_consolidation in state.pending_consolidations:
+        if pending_consolidation.target_index == target_index:
+            source_validator = state.validators[pending_consolidation.source_index]
+            pending_balance_to_consolidate += source_validator.effective_balance
+    return pending_balance_to_consolidate
+```
+
 ###### New `process_consolidation_request`
 
 ```python
@@ -1841,6 +1853,16 @@ def process_consolidation_request(
         return
     # Verify the source has no pending withdrawals in the queue
     if get_pending_balance_to_withdraw(state, source_index) > 0:
+        return
+
+    # Verify that the consolidating balance will
+    # end up as active balance, not as excess balance
+    target_balance_after_consolidation = (
+        get_pending_balance_to_consolidate(state, target_index)
+        + source_validator.effective_balance
+        + state.balances[target_index]
+    )
+    if target_balance_after_consolidation > get_max_effective_balance(target_validator):
         return
 
     # Initiate source validator exit and append pending consolidation
