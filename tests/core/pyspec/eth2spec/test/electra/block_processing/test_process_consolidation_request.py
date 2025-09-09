@@ -1676,7 +1676,87 @@ def test_exceeding_max_eb_with_the_source_eb_but_not_the_balance(spec, state):
 
     yield from run_consolidation_processing(spec, state, consolidation, success=False)
 
-# - test_multiple_pending_consolidations_exceeding_max_eb_with_the_source_eb_but_not_the_balance
+
+@with_electra_and_later
+@with_presets([MINIMAL], "need sufficient consolidation churn limit")
+@with_custom_state(
+    balances_fn=scaled_churn_balances_exceed_activation_exit_churn_limit,
+    threshold_fn=default_activation_threshold,
+)
+@spec_test
+@single_phase
+def test_multiple_pending_consolidations_exceeding_max_eb_with_the_source_eb_but_not_the_balance(spec, state):
+    # move state forward SHARD_COMMITTEE_PERIOD epochs to allow for consolidation
+    state.slot += spec.config.SHARD_COMMITTEE_PERIOD * spec.SLOTS_PER_EPOCH
+    # This state has 256 validators each with 32 ETH in MINIMAL preset, 128 ETH consolidation churn
+    current_epoch = spec.get_current_epoch(state)
+    active_indices = spec.get_active_validator_indices(state, current_epoch)
+    source_indices = active_indices[:4]
+    target_index = active_indices[4]
+
+    # Set target to compounding credentials
+    set_compounding_withdrawal_credential(spec, state, target_index)
+
+    # Set sources and their pending consolidations
+    source_address = b"\x22" * 20
+    source_effective_balance = spec.MAX_EFFECTIVE_BALANCE_ELECTRA // 4
+    source_balance = source_effective_balance - spec.EFFECTIVE_BALANCE_INCREMENT // 4
+    for source_index in source_indices[:3]:
+        set_compounding_withdrawal_credential_with_balance(
+            spec, state,
+            source_index,
+            effective_balance=source_effective_balance,
+            balance=source_balance,
+            address=source_address
+        )
+        pending_consolidation = spec.PendingConsolidation(
+            source_index = source_index,
+            target_index = target_index
+        )
+        state.pending_consolidations.append(pending_consolidation)
+
+    # Set the last source balance
+    request_source_index = source_indices[3]
+    target_balance = state.balances[target_index]
+    set_compounding_withdrawal_credential_with_balance(
+            spec, state,
+            request_source_index,
+            effective_balance=source_effective_balance + spec.EFFECTIVE_BALANCE_INCREMENT-target_balance,
+            balance=source_balance + spec.EFFECTIVE_BALANCE_INCREMENT-target_balance,
+            address=source_address
+        )
+
+    # Make consolidation with the last source address
+    consolidation = spec.ConsolidationRequest(
+        source_address=source_address,
+        source_pubkey=state.validators[request_source_index].pubkey,
+        target_pubkey=state.validators[target_index].pubkey,
+    )
+
+    # Add pending consolidation from a another source to another target
+    another_source_address = b"\x42" * 20
+    another_source_index = active_indices[5]
+    another_target_index = active_indices[6]
+    set_eth1_withdrawal_credential_with_balance(spec, state, another_source_index, address=another_source_address)
+    another_pending_consolidation = spec.PendingConsolidation(
+        source_index = another_source_index,
+        target_index = another_target_index
+    )
+    state.pending_consolidations.append(another_pending_consolidation)
+
+    # Check the return condition
+    assert (
+        sum(state.balances[index] for index in source_indices)
+        + state.balances[target_index] <= spec.MAX_EFFECTIVE_BALANCE_ELECTRA
+    )
+    assert (
+        spec.get_pending_balance_to_consolidate(state, target_index)
+        + state.validators[request_source_index].effective_balance
+        + state.balances[target_index] > spec.MAX_EFFECTIVE_BALANCE_ELECTRA
+    )
+
+    yield from run_consolidation_processing(spec, state, consolidation, success=False)
+
 
 def run_consolidation_processing(spec, state, consolidation, success=True):
     """
