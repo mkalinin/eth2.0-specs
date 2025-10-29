@@ -38,7 +38,7 @@
     - [New `find_latest_confirmed_descendant`](#new-find_latest_confirmed_descendant)
     - [New `get_latest_confirmed`](#new-get_latest_confirmed)
   - [Handlers](#handlers)
-    - [New `on_tick_per_slot_after_attestations_applied`](#new-on_tick_per_slot_after_attestations_applied)
+    - [New `on_slot_after_attestations`](#new-on_slot_after_attestations)
 
 <!-- mdformat-toc end -->
 
@@ -225,11 +225,13 @@ def get_chain_roots(store: Store, ancestor_root: Root, block_root: Root) -> Sequ
 
 ##### New `get_slot_committee`
 
+*Note*: This function uses checkpoint state of the head of canonical chain
+as a source of committee shuffling.
+
 ```python
 def get_slot_committee(store: Store, slot: Slot) -> Sequence[ValidatorIndex]:
     """
     Return participants of all committees in ``slot``.
-    Uses the checkpoint state of the head of the chain as a source of shuffling.
     """
     head = get_head(store)
     head_checkpoint = get_checkpoint_for_block(store, head, get_block_epoch(store, head))
@@ -286,14 +288,17 @@ def is_full_validator_set_covered(start_slot: Slot, end_slot: Slot) -> bool:
 
 ##### New `adjust_committee_weight_estimate_to_ensure_safety`
 
+*Notes*:
+
+This function adjust the estimate of the weight of a committee for a sequence of slots not covering a full epoch to
+ensure the safety of FCR with high probability.
+
+See https://gist.github.com/saltiniroberto/9ee53d29c33878d79417abb2b4468c20 for an explanation of why this is required.
+
 ```python
 def adjust_committee_weight_estimate_to_ensure_safety(estimate: Gwei) -> Gwei:
     """
-    Adjust the ``estimate`` of the weight of a committee for a sequence of slots not covering a full epoch to
-    ensure the safety of FCR with high probability.
-
-    See https://gist.github.com/saltiniroberto/9ee53d29c33878d79417abb2b4468c20 for an explanation of why this is
-    required.
+    Return adjusted ``estimate`` of the weight of a committee for a sequence of slots not covering a full epoch.
     """
     return Gwei(estimate // 1000 * (1000 + COMMITTEE_WEIGHT_ESTIMATION_ADJUSTMENT_FACTOR))
 ```
@@ -305,7 +310,8 @@ def estimate_committee_weight_between_slots(
     state: BeaconState, start_slot: Slot, end_slot: Slot
 ) -> Gwei:
     """
-    Estimate the total weight of committees between ``start_slot`` and ``end_slot`` (inclusive of both).
+    Return estimate of the total weight of committees
+    between ``start_slot`` and ``end_slot`` (inclusive of both).
     """
     total_active_balance = get_total_active_balance(state)
 
@@ -368,14 +374,18 @@ def get_equivocation_score(
 
 ##### New `compute_adversarial_weight`
 
+*Notes*:
+
+This function computes maximum possible weight that can be adversarial in the committees of the span of slots
+assuming `CONFIRMATION_BYZANTINE_THRESHOLD` and discounting already equivocated validators.
+
 ```python
 def compute_adversarial_weight(
     store: Store, balance_source: BeaconState, start_slot: Slot, end_slot: Slot
 ) -> Gwei:
     """
-    Compute maximum possible weight that can be adversarial in the committees of the slots
-    between ``start_slot`` and ``end_slot`` (inclusive of both),
-    assuming ``CONFIRMATION_BYZANTINE_THRESHOLD`` and discounting already equivocated validators.
+    Return maximum possible adversarial weight in the committees of the slots
+    between ``start_slot`` and ``end_slot`` (inclusive of both).
     """
     maximum_weight = estimate_committee_weight_between_slots(balance_source, start_slot, end_slot)
     max_adversarial_weight = maximum_weight // 100 * CONFIRMATION_BYZANTINE_THRESHOLD
@@ -412,7 +422,7 @@ def compute_empty_slot_support_discount(
     store: Store, balance_source: BeaconState, block_root: Root
 ) -> Gwei:
     """
-    Compute weight that can be discounted during the safety threshold computation
+    Return weight that can be discounted during the safety threshold computation
     if there are empty slots preceding the block.
     """
     block = store.blocks[block_root]
@@ -534,13 +544,17 @@ def is_confirmed_chain_safe(store: Store, confirmed_root: Root) -> bool:
 
 ##### New `get_checkpoint_score`
 
+*Notes:*
+
+This function uses LMD-GHOST votes to estimate the FFG support of a checkpoint.
+Due to the way the computation happens, it must be used no later than the start
+of the epoch next to the epoch of the checkpoint in question.
+Otherwise, the estimation can be corrupted by the votes from the next epoch.
+
 ```python
 def get_checkpoint_score(store: Store, target: Checkpoint) -> Gwei:
     """
-    Estimate FFG support of the ``target`` by using LMD-GHOST votes.
-
-    This function is supposed to be used only during the target's epoch
-    and the start of the epoch next to it, otherwise, the estimation might not be correct.
+    Return the estimate of FFG support of the ``target`` by using LMD-GHOST votes.
     """
     # No attestation with a vote for the target has yet been processed
     if target not in store.checkpoint_states:
@@ -569,6 +583,13 @@ def get_checkpoint_score(store: Store, target: Checkpoint) -> Gwei:
 ```
 
 ##### New `compute_honest_ffg_support`
+
+*Notes*:
+
+This function computes honest FFG support of the checkpoint by assuming `CONFIRMATION_BYZANTINE_THRESHOLD`
+and network synchrony, and taking into account votes supporting the checkpoint that have been received till now.
+
+Works correctly for current epoch checkpoints only as it relies on the `get_checkpoint_score` function.
 
 ```python
 def compute_honest_ffg_support(
@@ -649,7 +670,7 @@ and returns the most recent block that satisfies FCR conditions:
 
 1. Each block in its chain is LMD-GHOST safe,
    i.e. will be the winner of the LMD-GHOST fork choice rule starting from the current moment in time.
-2. The block will not be filtered out during the current and the next epochs.
+1. The block will not be filtered out during the current and the next epochs.
 
 Assuming synchrony and `CONFIRMATION_BYZANTINE_THRESHOLD` value, the above criteria
 ensures that the block returned by this function will remain canonical in the view
@@ -758,14 +779,14 @@ def find_latest_confirmed_descendant(store: Store, latest_confirmed_root: Root) 
 This function executes the FCR algorithm which takes the following sequence of actions:
 
 1. Check if the `store.confirmed_root` belongs to the canonical chain and is not older than the previous epoch.
-2. Check if the confirmed chain starting from the `store.prev_epoch_unrealized_justified_checkpoint`
+1. Check if the confirmed chain starting from the `store.prev_epoch_unrealized_justified_checkpoint`
    can be re-confirmed at the start of the current epoch which resets GST to the start of the current epoch.
-3. If any of the above checks fail, set `store.confirmed_root` to the `store.finalized_checkpoint.root`.
+1. If any of the above checks fail, set `store.confirmed_root` to the `store.finalized_checkpoint.root`.
    Either of the above conditions signify that FCR assumptions (at least synchrony) are broken and the confirmed block might not be safe.
-4. Restart the confirmation chain by setting `store.confirmed_root` to `store.prev_epoch_unrealized_justified_checkpoint.root`
+1. Restart the confirmation chain by setting `store.confirmed_root` to `store.prev_epoch_unrealized_justified_checkpoint.root`
    if the restart conditions are met. Under synchrony, such a checkpoint is for sure now the greatest justified checkpoint in the view
    of any honest validator and, therefore, any honest validator will keep voting for it for the entire epoch.
-5. Attempt to advance the `store.confirmed_root` by calling `find_latest_confirmed_descendant`.
+1. Attempt to advance the `store.confirmed_root` by calling `find_latest_confirmed_descendant`.
 
 ```python
 def get_latest_confirmed(store: Store) -> Root:
@@ -812,14 +833,20 @@ def get_latest_confirmed(store: Store) -> Root:
 
 ### Handlers
 
-#### New `on_tick_per_slot_after_attestations_applied`
+#### New `on_slot_after_attestations`
+
+*Notes:*
+
+This handler calls `get_latest_confirmed` and updates `store.confirmed_root`
+with the response of that call. It also updates `Store` variables used by the algorithm.
+
+The handler should be called at the start of each slot
+after attestations from the previous slot are applied to the fork choice.
+As these attestations may affect the execution of the algorithm itself
+and update of the variables like `store.prev_slot_head`.
 
 ```python
-def on_tick_per_slot_after_attestations_applied(store: Store):
-    # call sequence must be:
-    # 1) on_tick(store) handler
-    # 2) attestations from the previous slot are apllied to the store
-    # 3) on_tick_per_slot_after_attestations_applied(store) is called
+def on_slot_after_attestations(store: Store):
     store.confirmed_root = get_latest_confirmed(store)
     if is_start_slot_at_epoch(get_current_slot(store) + 1):
         store.prev_epoch_unrealized_justified_checkpoint = store.unrealized_justified_checkpoint
