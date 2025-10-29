@@ -82,17 +82,17 @@ handlers must not modify `store`.
 1. **Leap seconds**: Slots will last `SECONDS_PER_SLOT + 1` or
    `SECONDS_PER_SLOT - 1` seconds around leap seconds. This is automatically
    handled by [UNIX time](https://en.wikipedia.org/wiki/Unix_time).
-2. **Honest clocks**: Honest nodes are assumed to have clocks synchronized
+1. **Honest clocks**: Honest nodes are assumed to have clocks synchronized
    within `SECONDS_PER_SLOT` seconds of each other.
-3. **Eth1 data**: The large `ETH1_FOLLOW_DISTANCE` specified in the
+1. **Eth1 data**: The large `ETH1_FOLLOW_DISTANCE` specified in the
    [honest validator document](./validator.md) should ensure that
    `state.latest_eth1_data` of the canonical beacon chain remains consistent
    with the canonical Ethereum proof-of-work chain. If not, emergency manual
    intervention will be required.
-4. **Manual forks**: Manual forks may arbitrarily change the fork choice rule
+1. **Manual forks**: Manual forks may arbitrarily change the fork choice rule
    but are expected to be enacted at epoch transitions, with the fork details
    reflected in `state.fork`.
-5. **Implementation**: The implementation found in this specification is
+1. **Implementation**: The implementation found in this specification is
    constructed for ease of understanding rather than for optimization in
    computation, space, or any other resource. A number of optimized alternatives
    can be found [here](https://github.com/protolambda/lmd-ghost).
@@ -146,6 +146,13 @@ algorithm. The important fields being tracked are described below:
 - `unrealized_justifications`: stores a map of block root to the unrealized
   justified checkpoint observed in that block.
 
+The following fields are used by the Fast Confirmation Rule:
+
+- `confirmed_root`: root of the most recent confirmed block.
+- `prev_epoch_unrealized_justified_checkpoint`:
+  `unrealized_justified_checkpoint` at the start of the last slot of the previous epoch.
+- `prev_slot_head`: the head of canonical chain at the start of the previous slot.
+
 ```python
 @dataclass
 class Store(object):
@@ -163,6 +170,9 @@ class Store(object):
     checkpoint_states: Dict[Checkpoint, BeaconState] = field(default_factory=dict)
     latest_messages: Dict[ValidatorIndex, LatestMessage] = field(default_factory=dict)
     unrealized_justifications: Dict[Root, Checkpoint] = field(default_factory=dict)
+    confirmed_root: Root
+    prev_epoch_unrealized_justified_checkpoint: Checkpoint
+    prev_slot_head: Root
 ```
 
 #### `get_forkchoice_store`
@@ -197,6 +207,9 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         block_states={anchor_root: copy(anchor_state)},
         checkpoint_states={justified_checkpoint: copy(anchor_state)},
         unrealized_justifications={anchor_root: justified_checkpoint},
+        confirmed_root=anchor_root,
+        prev_epoch_unrealized_justified_checkpoint=justified_checkpoint,
+        prev_slot_head=anchor_root,
     )
 ```
 

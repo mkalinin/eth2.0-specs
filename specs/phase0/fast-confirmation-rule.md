@@ -7,8 +7,6 @@
   - [Constants](#constants)
   - [Configuration](#configuration)
   - [Helpers](#helpers)
-    - [Modified `Store`](#modified-store)
-    - [Modified `get_forkchoice_store`](#modified-get_forkchoice_store)
     - [Misc helper functions](#misc-helper-functions)
       - [New `get_block_slot`](#new-get_block_slot)
       - [New `get_block_epoch`](#new-get_block_epoch)
@@ -69,66 +67,6 @@ Consequently, this rule provides confirmations to users who believe in the above
 | `CONFIRMATION_SLASHING_THRESHOLD`  | `uint64(25)` | `CONFIRMATION_BYZANTINE_THRESHOLD` | Assumed maximum amount of stake that the adversary is willing to get slashed in order to reorg a block. |
 
 ### Helpers
-
-#### Modified `Store`
-
-*Note:* `Store` is extended with new fields required by the algorithm.
-The `confirmed_root` field contains the root of the most recent confirmed block.
-
-```python
-@dataclass
-class Store(object):
-    time: uint64
-    genesis_time: uint64
-    justified_checkpoint: Checkpoint
-    finalized_checkpoint: Checkpoint
-    unrealized_justified_checkpoint: Checkpoint
-    unrealized_finalized_checkpoint: Checkpoint
-    proposer_boost_root: Root
-    equivocating_indices: Set[ValidatorIndex]
-    blocks: Dict[Root, BeaconBlock] = field(default_factory=dict)
-    block_states: Dict[Root, BeaconState] = field(default_factory=dict)
-    block_timeliness: Dict[Root, boolean] = field(default_factory=dict)
-    checkpoint_states: Dict[Checkpoint, BeaconState] = field(default_factory=dict)
-    latest_messages: Dict[ValidatorIndex, LatestMessage] = field(default_factory=dict)
-    unrealized_justifications: Dict[Root, Checkpoint] = field(default_factory=dict)
-    # New in [FCR]
-    confirmed_root: Root
-    prev_epoch_unrealized_justified_checkpoint: Checkpoint
-    prev_slot_head: Root
-```
-
-#### Modified `get_forkchoice_store`
-
-*Note*: The function is extended with initialization of the new fields added to the `Store`.
-
-```python
-def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -> Store:
-    assert anchor_block.state_root == hash_tree_root(anchor_state)
-    anchor_root = hash_tree_root(anchor_block)
-    anchor_epoch = get_current_epoch(anchor_state)
-    justified_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
-    finalized_checkpoint = Checkpoint(epoch=anchor_epoch, root=anchor_root)
-    proposer_boost_root = Root()
-    return Store(
-        time=uint64(anchor_state.genesis_time + SECONDS_PER_SLOT * anchor_state.slot),
-        genesis_time=anchor_state.genesis_time,
-        justified_checkpoint=justified_checkpoint,
-        finalized_checkpoint=finalized_checkpoint,
-        unrealized_justified_checkpoint=justified_checkpoint,
-        unrealized_finalized_checkpoint=finalized_checkpoint,
-        proposer_boost_root=proposer_boost_root,
-        equivocating_indices=set(),
-        blocks={anchor_root: copy(anchor_block)},
-        block_states={anchor_root: copy(anchor_state)},
-        checkpoint_states={justified_checkpoint: copy(anchor_state)},
-        unrealized_justifications={anchor_root: justified_checkpoint},
-        # New in [FCR]
-        confirmed_root=finalized_checkpoint.root,
-        prev_epoch_unrealized_justified_checkpoint=justified_checkpoint,
-        prev_slot_head=anchor_block,
-    )
-```
 
 #### Misc helper functions
 
