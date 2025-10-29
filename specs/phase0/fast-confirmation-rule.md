@@ -492,6 +492,15 @@ def is_one_lmd_ghost_safe(store: Store, block_root: Root) -> bool:
 
 ##### New `is_confirmed_chain_safe`
 
+*Notes*:
+
+This function should be called at the start of each epoch to ensure that the confirmed chain
+starting from `store.prev_epoch_unrealized_justified_checkpoint.root` remains LMD-GHOST safe.
+
+This check relaxes synchrony assumption by allowing GST to start from the beginning of the previous slot
+without violation of the confirmed chain safety. If such check was not run, GST start would have to be assumed
+from the time of the first run of the algorithm which could happen a huge number of epochs ago.
+
 ```python
 def is_confirmed_chain_safe(store: Store, confirmed_root: Root) -> bool:
     """
@@ -499,7 +508,7 @@ def is_confirmed_chain_safe(store: Store, confirmed_root: Root) -> bool:
     starting from prev_epoch_unrealized_justified_checkpoint are LMD-GHOST safe.
     """
 
-    # Check if the confirmed_root is descendant of prev_epoch_unrealized_justified_checkpoint
+    # Check if the confirmed_root is descendant of prev_epoch_unrealized_justified_checkpoint.
     if not is_ancestor(
         store, confirmed_root, store.prev_epoch_unrealized_justified_checkpoint.root
     ):
@@ -507,16 +516,16 @@ def is_confirmed_chain_safe(store: Store, confirmed_root: Root) -> bool:
 
     current_epoch = get_current_store_epoch(store)
     if store.prev_epoch_unrealized_justified_checkpoint.epoch + 1 >= current_epoch:
-        # Exclude unrealized checkpoint block
-        # as the this block will always be canonical in this case
+        # Exclude unrealized checkpoint block if it is from the previous epoch
+        # as the this block will always be canonical in this case.
         start_root = store.prev_epoch_unrealized_justified_checkpoint.root
     else:
         # Limit reconfirmation to the checkpoint block
-        # as if it's successful, reconfirmation of the ancestors is implied
+        # as if it's successful, reconfirmation of the ancestors is implied.
         checkpoint = get_checkpoint_for_block(store, confirmed_root, current_epoch - 1)
         start_root = store.blocks[checkpoint.root].parent_root
 
-    # Run is_one_lmd_ghost_safe for each block in the confirmed chain
+    # Run is_one_lmd_ghost_safe for each block in the confirmed chain.
     chain_roots = get_chain_roots(store, start_root, confirmed_root)
     return all(is_one_lmd_ghost_safe(store, root) for root in chain_roots)
 ```
@@ -646,14 +655,14 @@ Assuming synchrony and `CONFIRMATION_BYZANTINE_THRESHOLD` value, the above crite
 ensures that the block returned by this function will remain canonical in the view
 of all honest validators starting from the current moment in time.
 
+This function works correctly only if the `latest_confirmed_root` belongs to the canonical chain
+and is either from the previous or from the current epoch.
+
 ```python
 def find_latest_confirmed_descendant(store: Store, latest_confirmed_root: Root) -> Root:
     """
     Return the most recent confirmed block in the suffix of the canonical chain
     starting from ``latest_confirmed_root``.
-
-    Assumes the ``latest_confirmed_root`` belongs to the canonical chain
-    and is either from the previous or from the current epoch.
     """
     head = get_head(store)
     current_epoch = get_current_store_epoch(store)
