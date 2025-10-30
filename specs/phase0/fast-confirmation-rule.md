@@ -67,10 +67,9 @@ blocks can be reorged without any adversarial behavior and without slashing.
 
 ### Configuration
 
-| Name                               | Value        | Max. Value                         | Description                                                                                             |
-| ---------------------------------- | ------------ | ---------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `CONFIRMATION_BYZANTINE_THRESHOLD` | `uint64(25)` | `uint64(25)`                       | Assumed maximum percentage of Byzantine validators among the validator set.                             |
-| `CONFIRMATION_SLASHING_THRESHOLD`  | `uint64(25)` | `CONFIRMATION_BYZANTINE_THRESHOLD` | Assumed maximum amount of stake that the adversary is willing to get slashed in order to reorg a block. |
+| Name                               | Value        | Max. Value   | Description                                                                 |
+| ---------------------------------- | ------------ | ------------ | --------------------------------------------------------------------------- |
+| `CONFIRMATION_BYZANTINE_THRESHOLD` | `uint64(25)` | `uint64(25)` | Assumed maximum percentage of Byzantine validators among the validator set. |
 
 ### Helpers
 
@@ -551,10 +550,6 @@ def compute_honest_ffg_support(
 ) -> Gwei:
     """
     Compute honest FFG support of the ``checkpoint``.
-
-    Takes into account observed votes supporting the ``checkpoint`` and
-    assumes ``CONFIRMATION_BYZANTINE_THRESHOLD`` and ``CONFIRMATION_SLASHING_THRESHOLD``.
-    This function works correctly only till the beginning of the epoch next to the ``checkpoint``'s epoch.
     """
     current_slot = get_current_slot(store)
     current_epoch = compute_epoch_at_slot(current_slot)
@@ -577,7 +572,6 @@ def compute_honest_ffg_support(
     # Compute min honest FFG support
     min_honest_ffg_support = ffg_support_for_checkpoint - min(
         Gwei(ffg_weight_till_now // 100 * CONFIRMATION_BYZANTINE_THRESHOLD),
-        Gwei(ffg_weight_till_now // 100 * CONFIRMATION_SLASHING_THRESHOLD),
         ffg_support_for_checkpoint,
     )
 
@@ -625,7 +619,7 @@ conditions:
 
 1. Each block in its chain is LMD-GHOST safe, i.e. will be the winner of the
    LMD-GHOST fork choice rule starting from the current moment in time.
-2. The block will not be filtered out during the current and the next epochs.
+1. The block will not be filtered out during the current and the next epochs.
 
 Assuming synchrony and `CONFIRMATION_BYZANTINE_THRESHOLD` value, the above
 criteria ensures that the block returned by this function will remain canonical
@@ -736,20 +730,20 @@ actions:
 
 1. Check if the `store.confirmed_root` belongs to the canonical chain and is not
    older than the previous epoch.
-2. Check if the confirmed chain starting from the
+1. Check if the confirmed chain starting from the
    `store.prev_epoch_unrealized_justified_checkpoint` can be re-confirmed at the
    start of the current epoch which resets GST to the start of the current
    epoch.
-3. If any of the above checks fail, set `store.confirmed_root` to the
+1. If any of the above checks fail, set `store.confirmed_root` to the
    `store.finalized_checkpoint.root`. Either of the above conditions signify
    that FCR assumptions (at least synchrony) are broken and the confirmed block
    might not be safe.
-4. Restart the confirmation chain by setting `store.confirmed_root` to
+1. Restart the confirmation chain by setting `store.confirmed_root` to
    `store.prev_epoch_unrealized_justified_checkpoint.root` if the restart
    conditions are met. Under synchrony, such a checkpoint is for sure now the
    greatest justified checkpoint in the view of any honest validator and,
    therefore, any honest validator will keep voting for it for the entire epoch.
-5. Attempt to advance the `store.confirmed_root` by calling
+1. Attempt to advance the `store.confirmed_root` by calling
    `find_latest_confirmed_descendant`.
 
 ```python

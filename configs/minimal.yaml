@@ -196,4 +196,3 @@ BLOB_SCHEDULE: []
 # Fast Confirmation Rule
 # ---------------------------------------------------------------
 CONFIRMATION_BYZANTINE_THRESHOLD: 25
-CONFIRMATION_SLASHING_THRESHOLD: 25
