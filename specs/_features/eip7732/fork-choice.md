@@ -24,6 +24,7 @@
   - [New `compute_reveal_boost`](#new-compute_reveal_boost)
   - [Modified `get_weight`](#modified-get_weight)
   - [Modified `get_head`](#modified-get_head)
+  - [Modified `get_latest_message_epoch`](#modified-get_latest_message_epoch)
 - [Updated fork-choice handlers](#updated-fork-choice-handlers)
   - [Modified `on_block`](#modified-on_block)
 - [New fork-choice handlers](#new-fork-choice-handlers)
@@ -113,6 +114,9 @@ class Store(object):
     unrealized_justified_checkpoint: Checkpoint
     unrealized_finalized_checkpoint: Checkpoint
     proposer_boost_root: Root
+    confirmed_root: Root
+    prev_epoch_unrealized_justified_checkpoint: Checkpoint
+    prev_slot_head: Root
     payload_withhold_boost_root: Root  # [New in EIP-7732]
     payload_withhold_boost_full: boolean  # [New in EIP-7732]
     payload_reveal_boost_root: Root  # [New in EIP-7732]
@@ -147,6 +151,9 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         unrealized_justified_checkpoint=justified_checkpoint,
         unrealized_finalized_checkpoint=finalized_checkpoint,
         proposer_boost_root=proposer_boost_root,
+        confirmed_root=anchor_root,
+        prev_epoch_unrealized_justified_checkpoint=justified_checkpoint,
+        prev_slot_head=anchor_root,
         payload_withhold_boost_root=proposer_boost_root,  # [New in EIP-7732]
         payload_withhold_boost_full=True,  # [New in EIP-7732]
         payload_reveal_boost_root=proposer_boost_root,  # [New in EIP-7732]
@@ -432,6 +439,13 @@ def get_head(store: Store) -> ChildNode:
         if new_best_child.root == best_child.root and new_best_child.slot >= highest_child_slot:
             return new_best_child
         best_child = new_best_child
+```
+
+### Modified `get_latest_message_epoch`
+
+```python
+def get_latest_message_epoch(latest_message: LatestMessage) -> Epoch:
+    return compute_epoch_at_slot(latest_message.slot)
 ```
 
 ## Updated fork-choice handlers

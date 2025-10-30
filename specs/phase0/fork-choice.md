@@ -27,6 +27,7 @@
     - [`get_head`](#get_head)
     - [`update_checkpoints`](#update_checkpoints)
     - [`update_unrealized_checkpoints`](#update_unrealized_checkpoints)
+    - [`get_latest_message_epoch`](#get_latest_message_epoch)
     - [Proposer head and reorg helpers](#proposer-head-and-reorg-helpers)
       - [`is_head_late`](#is_head_late)
       - [`is_shuffling_stable`](#is_shuffling_stable)
@@ -82,17 +83,17 @@ handlers must not modify `store`.
 1. **Leap seconds**: Slots will last `SECONDS_PER_SLOT + 1` or
    `SECONDS_PER_SLOT - 1` seconds around leap seconds. This is automatically
    handled by [UNIX time](https://en.wikipedia.org/wiki/Unix_time).
-1. **Honest clocks**: Honest nodes are assumed to have clocks synchronized
+2. **Honest clocks**: Honest nodes are assumed to have clocks synchronized
    within `SECONDS_PER_SLOT` seconds of each other.
-1. **Eth1 data**: The large `ETH1_FOLLOW_DISTANCE` specified in the
+3. **Eth1 data**: The large `ETH1_FOLLOW_DISTANCE` specified in the
    [honest validator document](./validator.md) should ensure that
    `state.latest_eth1_data` of the canonical beacon chain remains consistent
    with the canonical Ethereum proof-of-work chain. If not, emergency manual
    intervention will be required.
-1. **Manual forks**: Manual forks may arbitrarily change the fork choice rule
+4. **Manual forks**: Manual forks may arbitrarily change the fork choice rule
    but are expected to be enacted at epoch transitions, with the fork details
    reflected in `state.fork`.
-1. **Implementation**: The implementation found in this specification is
+5. **Implementation**: The implementation found in this specification is
    constructed for ease of understanding rather than for optimization in
    computation, space, or any other resource. A number of optimized alternatives
    can be found [here](https://github.com/protolambda/lmd-ghost).
@@ -150,8 +151,10 @@ The following fields are used by the Fast Confirmation Rule:
 
 - `confirmed_root`: root of the most recent confirmed block.
 - `prev_epoch_unrealized_justified_checkpoint`:
-  `unrealized_justified_checkpoint` at the start of the last slot of the previous epoch.
-- `prev_slot_head`: the head of canonical chain at the start of the previous slot.
+  `unrealized_justified_checkpoint` at the start of the last slot of the
+  previous epoch.
+- `prev_slot_head`: the head of canonical chain at the start of the previous
+  slot.
 
 ```python
 @dataclass
@@ -163,6 +166,9 @@ class Store(object):
     unrealized_justified_checkpoint: Checkpoint
     unrealized_finalized_checkpoint: Checkpoint
     proposer_boost_root: Root
+    confirmed_root: Root
+    prev_epoch_unrealized_justified_checkpoint: Checkpoint
+    prev_slot_head: Root
     equivocating_indices: Set[ValidatorIndex]
     blocks: Dict[Root, BeaconBlock] = field(default_factory=dict)
     block_states: Dict[Root, BeaconState] = field(default_factory=dict)
@@ -170,9 +176,6 @@ class Store(object):
     checkpoint_states: Dict[Checkpoint, BeaconState] = field(default_factory=dict)
     latest_messages: Dict[ValidatorIndex, LatestMessage] = field(default_factory=dict)
     unrealized_justifications: Dict[Root, Checkpoint] = field(default_factory=dict)
-    confirmed_root: Root
-    prev_epoch_unrealized_justified_checkpoint: Checkpoint
-    prev_slot_head: Root
 ```
 
 #### `get_forkchoice_store`
@@ -202,14 +205,14 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         unrealized_justified_checkpoint=justified_checkpoint,
         unrealized_finalized_checkpoint=finalized_checkpoint,
         proposer_boost_root=proposer_boost_root,
+        confirmed_root=anchor_root,
+        prev_epoch_unrealized_justified_checkpoint=justified_checkpoint,
+        prev_slot_head=anchor_root,
         equivocating_indices=set(),
         blocks={anchor_root: copy(anchor_block)},
         block_states={anchor_root: copy(anchor_state)},
         checkpoint_states={justified_checkpoint: copy(anchor_state)},
         unrealized_justifications={anchor_root: justified_checkpoint},
-        confirmed_root=anchor_root,
-        prev_epoch_unrealized_justified_checkpoint=justified_checkpoint,
-        prev_slot_head=anchor_root,
     )
 ```
 
@@ -466,6 +469,16 @@ def update_unrealized_checkpoints(
     # Update unrealized finalized checkpoint
     if unrealized_finalized_checkpoint.epoch > store.unrealized_finalized_checkpoint.epoch:
         store.unrealized_finalized_checkpoint = unrealized_finalized_checkpoint
+```
+
+#### `get_latest_message_epoch`
+
+```python
+def get_latest_message_epoch(latest_message: LatestMessage) -> Epoch:
+    """
+    Return epoch of the ``latest_message``.
+    """
+    return latest_message.epoch
 ```
 
 #### Proposer head and reorg helpers
