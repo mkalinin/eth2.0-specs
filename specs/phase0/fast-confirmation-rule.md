@@ -36,7 +36,7 @@
     - [`find_latest_confirmed_descendant`](#find_latest_confirmed_descendant)
     - [`get_latest_confirmed`](#get_latest_confirmed)
   - [Handlers](#handlers)
-    - [`on_slot_after_attestations`](#on_slot_after_attestations)
+    - [`on_slot_after_attestations_applied`](#on_slot_after_attestations_applied)
 
 <!-- mdformat-toc end -->
 
@@ -791,7 +791,7 @@ def get_latest_confirmed(store: Store) -> Root:
 
 ### Handlers
 
-#### `on_slot_after_attestations`
+#### `on_slot_after_attestations_applied`
 
 *Notes:*
 
@@ -805,7 +805,7 @@ affect the execution of the algorithm itself and update of the variables like
 `store.prev_slot_head`.
 
 ```python
-def on_slot_after_attestations(store: Store) -> None:
+def on_slot_after_attestations_applied(store: Store) -> None:
     store.confirmed_root = get_latest_confirmed(store)
     if is_start_slot_at_epoch(Slot(get_current_slot(store) + 1)):
         store.prev_epoch_unrealized_justified_checkpoint = store.unrealized_justified_checkpoint
