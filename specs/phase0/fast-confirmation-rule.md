@@ -102,7 +102,7 @@ def get_checkpoint_for_block(store: Store, block_root: Root, epoch: Epoch) -> Ch
     """
     Return a checkpoint in the chain of the block at the ``epoch``.
     """
-    return Checkpoint(get_checkpoint_block(store, block_root, epoch), epoch)
+    return Checkpoint(epoch=epoch, root=get_checkpoint_block(store, block_root, epoch))
 ```
 
 ##### `get_checkpoint_state`
@@ -151,17 +151,19 @@ def get_chain_roots(store: Store, ancestor_root: Root, block_root: Root) -> list
     Return block roots between ``ancestor_root`` exclusive and ``block_root`` inclusive.
     """
     ancestor_slot = get_block_slot(store, ancestor_root)
-    chain_roots = [block_root]
-    while store.blocks[block_root].slot > ancestor_slot:
-        block_root = store.blocks[block_root].parent_root
-        chain_roots.insert(0, block_root)
+    chain_roots = []
+    root = block_root
+    while store.blocks[root].slot > ancestor_slot:
+        # Return if ancestor_root encountered
+        if root == ancestor_root:
+            return chain_roots
+        else:
+            chain_roots.insert(0, root)
 
-    # Return list of roots if the ancestor_root is in the chain of block_root,
-    # otherwise, return empty list.
-    if ancestor_root == store.blocks[chain_roots[0]].parent_root:
-        return chain_roots
-    else:
-        return []
+        root = store.blocks[root].parent_root
+
+    # Return empty list if ancestor_root is not in the chain of block_root
+    return []
 ```
 
 #### LMD-GHOST helpers
