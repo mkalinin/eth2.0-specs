@@ -45,9 +45,6 @@
 This document specifies a fast block confirmation rule (a.k.a. FCR) for the
 Ethereum protocol.
 
-*Note*: Confirmation is not a substitute for finality! The safety of
-confirmations is weaker than that of finality.
-
 The research paper for this rule can be found
 [here](https://arxiv.org/abs/2405.00549).
 
