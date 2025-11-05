@@ -120,8 +120,7 @@ Electra is a consensus-layer upgrade containing a number of features. Including:
   outside Attestation
 - [EIP-7691](https://eips.ethereum.org/EIPS/eip-7691): Blob throughput increase
 
-*Note*: This specification is built upon [Deneb](../deneb/beacon-chain.md) and
-is under active development.
+*Note*: This specification is built upon [Deneb](../deneb/beacon-chain.md).
 
 ## Constants
 
@@ -438,7 +437,8 @@ def compute_proposer_index(
     Return from ``indices`` a random index sampled by effective balance.
     """
     assert len(indices) > 0
-    MAX_RANDOM_VALUE = 2**16 - 1  # [Modified in Electra]
+    # [Modified in Electra]
+    MAX_RANDOM_VALUE = 2**16 - 1
     i = uint64(0)
     total = uint64(len(indices))
     while True:
@@ -649,7 +649,8 @@ def get_next_sync_committee_indices(state: BeaconState) -> Sequence[ValidatorInd
     """
     epoch = Epoch(get_current_epoch(state) + 1)
 
-    MAX_RANDOM_VALUE = 2**16 - 1  # [Modified in Electra]
+    # [Modified in Electra]
+    MAX_RANDOM_VALUE = 2**16 - 1
     active_validator_indices = get_active_validator_indices(state, epoch)
     active_validator_count = uint64(len(active_validator_indices))
     seed = get_seed(state, epoch, DOMAIN_SYNC_COMMITTEE)
@@ -876,13 +877,15 @@ def process_registry_updates(state: BeaconState) -> None:
 
     # Process activation eligibility, ejections, and activations
     for index, validator in enumerate(state.validators):
-        if is_eligible_for_activation_queue(validator):  # [Modified in Electra:EIP7251]
+        # [Modified in Electra:EIP7251]
+        if is_eligible_for_activation_queue(validator):
             validator.activation_eligibility_epoch = current_epoch + 1
         elif (
             is_active_validator(validator, current_epoch)
             and validator.effective_balance <= EJECTION_BALANCE
         ):
-            initiate_validator_exit(state, ValidatorIndex(index))  # [Modified in Electra:EIP7251]
+            # [Modified in Electra:EIP7251]
+            initiate_validator_exit(state, ValidatorIndex(index))
         elif is_eligible_for_activation(state, validator):
             validator.activation_epoch = activation_epoch
 ```
@@ -1192,7 +1195,8 @@ def get_expected_withdrawals(state: BeaconState) -> Tuple[Sequence[Withdrawal], 
     withdrawals: List[Withdrawal] = []
     processed_partial_withdrawals_count = 0
 
-    # [New in Electra:EIP7251] Consume pending partial withdrawals
+    # [New in Electra:EIP7251]
+    # Consume pending partial withdrawals
     for withdrawal in state.pending_partial_withdrawals:
         if (
             withdrawal.withdrawable_epoch > epoch
@@ -1273,7 +1277,8 @@ def process_withdrawals(state: BeaconState, payload: ExecutionPayload) -> None:
     for withdrawal in expected_withdrawals:
         decrease_balance(state, withdrawal.validator_index, withdrawal.amount)
 
-    # [New in Electra:EIP7251] Update pending partial withdrawals
+    # [New in Electra:EIP7251]
+    # Update pending partial withdrawals
     state.pending_partial_withdrawals = state.pending_partial_withdrawals[
         processed_partial_withdrawals_count:
     ]
@@ -1337,12 +1342,16 @@ def process_execution_payload(
     assert payload.prev_randao == get_randao_mix(state, get_current_epoch(state))
     # Verify timestamp
     assert payload.timestamp == compute_time_at_slot(state, state.slot)
-    # [Modified in Electra:EIP7691] Verify commitments are under limit
+    # [Modified in Electra:EIP7691]
+    # Verify commitments are under limit
     assert len(body.blob_kzg_commitments) <= MAX_BLOBS_PER_BLOCK_ELECTRA
-    # Verify the execution payload is valid
+
+    # Compute list of versioned hashes
     versioned_hashes = [
         kzg_commitment_to_versioned_hash(commitment) for commitment in body.blob_kzg_commitments
     ]
+
+    # Verify the execution payload is valid
     assert execution_engine.verify_and_notify_new_payload(
         NewPayloadRequest(
             execution_payload=payload,
@@ -1352,6 +1361,7 @@ def process_execution_payload(
             execution_requests=body.execution_requests,
         )
     )
+
     # Cache execution payload header
     state.latest_execution_payload_header = ExecutionPayloadHeader(
         parent_hash=payload.parent_hash,
@@ -1629,7 +1639,6 @@ def process_voluntary_exit(state: BeaconState, signed_voluntary_exit: SignedVolu
     assert get_current_epoch(state) >= validator.activation_epoch + SHARD_COMMITTEE_PERIOD
     # [New in Electra:EIP7251]
     # Only exit validator if it has no pending withdrawals in the queue
-
     assert get_pending_balance_to_withdraw(state, voluntary_exit.validator_index) == 0
     # Verify signature
     domain = compute_domain(
