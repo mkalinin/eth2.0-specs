@@ -1,6 +1,5 @@
 import random
 
-from eth_utils import encode_hex
 from eth2spec.test.context import MINIMAL, spec_state_test, with_altair_and_later, with_presets
 from eth2spec.test.helpers.attestations import (
     get_valid_attestations_for_block_at_slot,
@@ -19,22 +18,9 @@ from eth2spec.test.helpers.state import (
     state_transition_and_sign_block,
 )
 from eth2spec.utils.ssz.ssz_impl import hash_tree_root
-
-
-def on_slot_after_attestations_applied_and_append_step(spec, store, test_steps):
-    spec.on_slot_after_attestations_applied(store)
-    test_steps.append({"slot_after_attestations_applied": spec.get_current_slot(store)})
-    checks = {
-        "time": int(store.time),
-        "prev_epoch_unrealized_justified_checkpoint": {
-            "epoch": int(store.prev_epoch_unrealized_justified_checkpoint.epoch),
-            "root": encode_hex(store.prev_epoch_unrealized_justified_checkpoint.root),
-        },
-        "prev_slot_head": encode_hex(store.prev_slot_head),
-        "confirmed_root": encode_hex(store.confirmed_root),
-    }
-
-    test_steps.append({"checks": checks})
+from eth2spec.test.helpers.fast_confirmation_rule import (
+    on_slot_after_attestations_applied_and_append_step,
+)
 
 
 @with_altair_and_later
