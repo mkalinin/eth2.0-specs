@@ -26,7 +26,7 @@
       - [`get_adversarial_weight`](#get_adversarial_weight)
       - [`compute_empty_slot_support_discount`](#compute_empty_slot_support_discount)
       - [`get_support_discount`](#get_support_discount)
-      - [`is_one_lmd_ghost_safe`](#is_one_lmd_ghost_safe)
+      - [`is_one_confirmed`](#is_one_confirmed)
       - [`is_confirmed_chain_safe`](#is_confirmed_chain_safe)
     - [FFG helpers](#ffg-helpers)
       - [`get_checkpoint_score`](#get_checkpoint_score)
@@ -153,7 +153,7 @@ def get_ancestor_roots(store: Store, block_root: Root, terminal_root: Root) -> l
         ancestor_roots.insert(0, root)
         root = store.blocks[root].parent_root
 
-        # Return when terminal_root is encountered
+        # Return when terminal_root is reached
         if root == terminal_root:
             return ancestor_roots
 
@@ -400,7 +400,7 @@ def get_support_discount(store: Store, balance_source: BeaconState, block_root: 
     return compute_empty_slot_support_discount(store, balance_source, block_root)
 ```
 
-##### `is_one_lmd_ghost_safe`
+##### `is_one_confirmed`
 
 *Notes:*
 
@@ -419,7 +419,7 @@ More details on this check can be found in the
 [paper](https://arxiv.org/abs/2405.00549).
 
 ```python
-def is_one_lmd_ghost_safe(store: Store, block_root: Root) -> bool:
+def is_one_confirmed(store: Store, block_root: Root) -> bool:
     """
     Return ``True`` if and only if the block is LMD-GHOST safe.
     """
@@ -481,9 +481,9 @@ def is_confirmed_chain_safe(store: Store, confirmed_root: Root) -> bool:
         checkpoint = get_checkpoint_for_block(store, confirmed_root, Epoch(current_epoch - 1))
         start_root = store.blocks[checkpoint.root].parent_root
 
-    # Run is_one_lmd_ghost_safe for each block in the confirmed chain.
+    # Run is_one_confirmed for each block in the confirmed chain.
     chain_roots = get_ancestor_roots(store, confirmed_root, start_root)
-    return all(is_one_lmd_ghost_safe(store, root) for root in chain_roots)
+    return all(is_one_confirmed(store, root) for root in chain_roots)
 ```
 
 #### FFG helpers
@@ -670,7 +670,7 @@ def find_latest_confirmed_descendant(store: Store, latest_confirmed_root: Root) 
             if not is_ancestor(store, store.prev_slot_head, block_root):
                 break
 
-            if not is_one_lmd_ghost_safe(store, block_root):
+            if not is_one_confirmed(store, block_root):
                 break
 
             confirmed_root = block_root
@@ -697,7 +697,7 @@ def find_latest_confirmed_descendant(store: Store, latest_confirmed_root: Root) 
                 if not will_checkpoint_be_justified(store, checkpoint):
                     break
 
-            if not is_one_lmd_ghost_safe(store, block_root):
+            if not is_one_confirmed(store, block_root):
                 break
 
             tentative_confirmed_root = block_root
