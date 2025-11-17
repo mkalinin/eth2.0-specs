@@ -14,7 +14,7 @@
       - [`get_checkpoint_state`](#get_checkpoint_state)
       - [`is_start_slot_at_epoch`](#is_start_slot_at_epoch)
       - [`is_ancestor`](#is_ancestor)
-      - [`get_chain_roots`](#get_chain_roots)
+      - [`get_ancestor_roots`](#get_ancestor_roots)
     - [LMD-GHOST helpers](#lmd-ghost-helpers)
       - [`get_slot_committee`](#get_slot_committee)
       - [`get_block_support_between_slots`](#get_block_support_between_slots)
@@ -140,26 +140,24 @@ def is_ancestor(store: Store, block_root: Root, ancestor_root: Root) -> bool:
     return get_ancestor(store, block_root, store.blocks[ancestor_root].slot) == ancestor_root
 ```
 
-##### `get_chain_roots`
+##### `get_ancestor_roots`
 
 ```python
-def get_chain_roots(store: Store, ancestor_root: Root, block_root: Root) -> list[Root]:
+def get_ancestor_roots(store: Store, block_root: Root, terminal_root: Root) -> list[Root]:
     """
-    Return block roots between ``ancestor_root`` exclusive and ``block_root`` inclusive.
+    Return a list of ancestors of ``block_root`` inclusive until ``terminal_root`` exclusive.
     """
-    ancestor_slot = get_block_slot(store, ancestor_root)
-    chain_roots = []
     root = block_root
-    while store.blocks[root].slot > ancestor_slot:
-        # Return if ancestor_root encountered
-        if root == ancestor_root:
-            return chain_roots
-        else:
-            chain_roots.insert(0, root)
-
+    ancestor_roots = []
+    while store.blocks[root].slot > store.blocks[terminal_root].slot:
+        ancestor_roots.insert(0, root)
         root = store.blocks[root].parent_root
 
-    # Return empty list if ancestor_root is not in the chain of block_root
+        # Return when terminal_root is encountered
+        if root == terminal_root:
+            return ancestor_roots
+
+    # Return empty list if terminal_root is not in the chain of block_root
     return []
 ```
 
@@ -484,7 +482,7 @@ def is_confirmed_chain_safe(store: Store, confirmed_root: Root) -> bool:
         start_root = store.blocks[checkpoint.root].parent_root
 
     # Run is_one_lmd_ghost_safe for each block in the confirmed chain.
-    chain_roots = get_chain_roots(store, start_root, confirmed_root)
+    chain_roots = get_ancestor_roots(store, confirmed_root, start_root)
     return all(is_one_lmd_ghost_safe(store, root) for root in chain_roots)
 ```
 
@@ -654,7 +652,7 @@ def find_latest_confirmed_descendant(store: Store, latest_confirmed_root: Root) 
         )
     ):
         # Get suffix of the canonical chain
-        canonical_roots = get_chain_roots(store, confirmed_root, head)
+        canonical_roots = get_ancestor_roots(store, head, confirmed_root)
 
         # Starting with the child of the latest_confirmed_root
         # move towards the head in attempt to advance confirmed block
@@ -682,7 +680,7 @@ def find_latest_confirmed_descendant(store: Store, latest_confirmed_root: Root) 
         or store.unrealized_justifications[head].epoch + 1 >= current_epoch
     ):
         # Get suffix of the canonical chain
-        canonical_roots = get_chain_roots(store, confirmed_root, head)
+        canonical_roots = get_ancestor_roots(store, head, confirmed_root)
 
         tentative_confirmed_root = confirmed_root
 

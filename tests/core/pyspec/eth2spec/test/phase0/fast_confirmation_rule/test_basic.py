@@ -14,7 +14,6 @@ from eth2spec.test.helpers.fork_choice import (
     add_attestations,
 )
 from eth2spec.test.helpers.state import (
-    payload_state_transition,
     state_transition_and_sign_block,
 )
 from eth2spec.utils.ssz.ssz_impl import hash_tree_root
@@ -45,7 +44,6 @@ def test_fast_confirm_an_epoch(spec, state):
                 block.body.attestations.append(attestation)
             signed_block = state_transition_and_sign_block(spec, state, block)
             yield from add_block(spec, store, signed_block, test_steps)
-            payload_state_transition(spec, store, signed_block.message)
         else:
             block = anchor_block
 
