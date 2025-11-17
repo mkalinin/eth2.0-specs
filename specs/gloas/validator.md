@@ -8,6 +8,7 @@
 - [Configuration](#configuration)
   - [Time parameters](#time-parameters)
 - [Validator assignment](#validator-assignment)
+  - [Payload timeliness committee](#payload-timeliness-committee)
   - [Lookahead](#lookahead)
 - [Beacon chain responsibilities](#beacon-chain-responsibilities)
   - [Attestation](#attestation)
@@ -43,6 +44,8 @@ validator" to implement Gloas.
 | `PAYLOAD_ATTESTATION_DUE_BPS` | `uint64(7500)` | basis points | 75% of `SLOT_DURATION_MS` |
 
 ## Validator assignment
+
+### Payload timeliness committee
 
 A validator may be a member of the new Payload Timeliness Committee (PTC) for a
 given slot. To check for PTC assignments, use
@@ -81,9 +84,9 @@ future assignments by noting their assigned PTC slot.
 
 All validator responsibilities remain unchanged other than the following:
 
-- Proposers are no longer required to broadcast `BlobSidecar` objects, as this
-  becomes a builder's duty.
-- Some validators are selected per slot to become PTC members, these validators
+- Proposers are no longer required to broadcast `DataColumnSidecar` objects, as
+  this becomes a builder's duty.
+- Some attesters are selected per slot to become PTC members, these validators
   must broadcast `PayloadAttestationMessage` objects during the assigned slot
   before the deadline of `get_attestation_due_ms(epoch)` milliseconds into the
   slot.
@@ -126,14 +129,15 @@ top of a `state` MUST take the following actions in order to construct the
   `signed_execution_payload_bid` from a builder. The block proposer MAY obtain
   these signed messages by other off-protocol means.
 - The `signed_execution_payload_bid` MUST satisfy the verification conditions
-  found in `process_execution_payload_bid`, that is:
-  - For external builders, the header signature MUST be valid.
+  found in `process_execution_payload_bid` with the alias
+  `bid = signed_execution_payload_bid.message`, that is:
+  - For external builders, the signature MUST be valid.
   - For self-builds, the signature MUST be `bls.G2_POINT_AT_INFINITY` and the
-    bid amount MUST be zero.
-  - The builder balance can cover the header value.
-  - The header slot is for the proposal block slot.
-  - The header parent block hash equals the state's `latest_block_hash`.
-  - The header parent block root equals the current block's `parent_root`.
+    `bid.value` MUST be zero.
+  - The builder balance can cover the `bid.value`.
+  - The `bid.slot` is for the proposal block slot.
+  - The `bid.parent_block_hash` equals the state's `latest_block_hash`.
+  - The `bid.parent_block_root` equals the current block's `parent_root`.
 - Select one bid and set
   `body.signed_execution_payload_bid = signed_execution_payload_bid`.
 
