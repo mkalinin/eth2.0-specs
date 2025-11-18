@@ -2,16 +2,18 @@ from eth_utils import encode_hex
 
 
 def output_fcr_checks(spec, store, test_steps):
-    test_steps.append({
-        "checks": {
-            "prev_epoch_unrealized_justified_checkpoint": {
-                "epoch": int(store.prev_epoch_unrealized_justified_checkpoint.epoch),
-                "root": encode_hex(store.prev_epoch_unrealized_justified_checkpoint.root),
-            },
-            "prev_slot_head": encode_hex(store.prev_slot_head),
-            "confirmed_root": encode_hex(store.confirmed_root),
+    test_steps.append(
+        {
+            "checks": {
+                "prev_epoch_unrealized_justified_checkpoint": {
+                    "epoch": int(store.prev_epoch_unrealized_justified_checkpoint.epoch),
+                    "root": encode_hex(store.prev_epoch_unrealized_justified_checkpoint.root),
+                },
+                "prev_slot_head": encode_hex(store.prev_slot_head),
+                "confirmed_root": encode_hex(store.confirmed_root),
+            }
         }
-    })
+    )
 
 
 def on_slot_after_attestations_applied_and_append_step(spec, store, test_steps):

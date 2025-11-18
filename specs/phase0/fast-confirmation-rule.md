@@ -148,7 +148,7 @@ def get_ancestor_roots(store: Store, block_root: Root, terminal_root: Root) -> l
     Return a list of ancestors of ``block_root`` inclusive until ``terminal_root`` exclusive.
     """
     root = block_root
-    ancestor_roots = []
+    ancestor_roots: list[Root] = []
     while store.blocks[root].slot > store.blocks[terminal_root].slot:
         ancestor_roots.insert(0, root)
         root = store.blocks[root].parent_root
@@ -616,7 +616,7 @@ conditions:
 
 1. Each block in its chain is LMD-GHOST safe, i.e. will be the winner of the
    LMD-GHOST fork choice rule starting from the current moment in time.
-1. The block will not be filtered out during the current and the next epochs.
+2. The block will not be filtered out during the current and the next epochs.
 
 Assuming synchrony and `CONFIRMATION_BYZANTINE_THRESHOLD` value, the above
 criteria ensures that the block returned by this function will remain canonical
@@ -727,20 +727,20 @@ actions:
 
 1. Check if the `store.confirmed_root` belongs to the canonical chain and is not
    older than the previous epoch.
-1. Check if the confirmed chain starting from the
+2. Check if the confirmed chain starting from the
    `store.prev_epoch_unrealized_justified_checkpoint` can be re-confirmed at the
    start of the current epoch which resets GST to the start of the current
    epoch.
-1. If any of the above checks fail, set `store.confirmed_root` to the
+3. If any of the above checks fail, set `store.confirmed_root` to the
    `store.finalized_checkpoint.root`. Either of the above conditions signify
    that FCR assumptions (at least synchrony) are broken and the confirmed block
    might not be safe.
-1. Restart the confirmation chain by setting `store.confirmed_root` to
+4. Restart the confirmation chain by setting `store.confirmed_root` to
    `store.prev_epoch_unrealized_justified_checkpoint.root` if the restart
    conditions are met. Under synchrony, such a checkpoint is for sure now the
    greatest justified checkpoint in the view of any honest validator and,
    therefore, any honest validator will keep voting for it for the entire epoch.
-1. Attempt to advance the `store.confirmed_root` by calling
+5. Attempt to advance the `store.confirmed_root` by calling
    `find_latest_confirmed_descendant`.
 
 ```python

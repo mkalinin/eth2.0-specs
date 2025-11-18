@@ -306,16 +306,19 @@ def next_slots_with_attestations(
     return state, signed_blocks, post_state
 
 
-def get_valid_attestations_for_block_at_slot(spec, state, slot_to_attest,
-                                             beacon_block_root=None, participation_fn=None):
+def get_valid_attestations_for_block_at_slot(
+    spec, state, slot_to_attest, beacon_block_root=None, participation_fn=None
+):
     if is_post_electra(spec):
-        return [get_valid_attestation_at_slot(
-            state,
-            spec,
-            slot_to_attest,
-            participation_fn=participation_fn,
-            beacon_block_root=beacon_block_root,
-        )]
+        return [
+            get_valid_attestation_at_slot(
+                state,
+                spec,
+                slot_to_attest,
+                participation_fn=participation_fn,
+                beacon_block_root=beacon_block_root,
+            )
+        ]
     else:
         return get_valid_attestations_at_slot(
             state,
@@ -328,7 +331,8 @@ def get_valid_attestations_for_block_at_slot(spec, state, slot_to_attest,
 
 def _add_valid_attestations(spec, state, block, slot_to_attest, participation_fn=None):
     attestations = get_valid_attestations_for_block_at_slot(
-        spec, state, slot_to_attest, beacon_block_root=None, participation_fn=participation_fn)
+        spec, state, slot_to_attest, beacon_block_root=None, participation_fn=participation_fn
+    )
     for attestation in attestations:
         block.body.attestations.append(attestation)
 
