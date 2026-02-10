@@ -1,17 +1,3 @@
-import copy
-
-from eth_utils import encode_hex
-
-from eth2spec.test.helpers.state import transition_to
-
-from eth2spec.test.context import MINIMAL, spec_state_test, with_altair_and_later, with_presets
-
-from eth2spec.test.helpers.block import build_empty_block  # NOTE: build_empty_block (not _for_next_slot)
-from eth2spec.test.helpers.state import state_transition_and_sign_block, transition_to
-from eth2spec.test.helpers.fork_choice import add_block
-
-from eth2spec.test.helpers.attestations import get_valid_attestations_for_block_at_slot
-
 from eth2spec.test.context import (
     default_activation_threshold,
     default_balances,
@@ -30,6 +16,7 @@ from eth2spec.test.helpers.fast_confirmation import (
 Test on restart to GU
 """
 
+
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
 @with_custom_state(
@@ -45,7 +32,7 @@ def test_fcr_restarts_to_gu_when_all_conditions_met(spec, state):
     2. GU.epoch + 1 == current_epoch (GU is fresh)
     3. GU == unrealized_justifications[head]
     4. slot(confirmed) < slot(block(GU))
-    
+
     Strategy:
     - Epochs 0-4: 100% participation, confirmations and justification advance
     - Last slot of epoch 4: GU sampling happens, then late slashing arrives
@@ -95,30 +82,25 @@ def test_fcr_restarts_to_gu_when_all_conditions_met(spec, state):
     gu_slot = spec.get_block_slot(store, gu.root)
     finalized_slot = spec.get_block_slot(store, finalized)
 
-    assert gu.epoch + 1 == current_epoch, \
-        f"GU not fresh: {gu.epoch} + 1 != {current_epoch}"
-    assert confirmed_before != finalized, \
-        "Should have confirmations before FCR"
-    assert gu == head_uj, \
-        "GU != head's UJ"
-    assert finalized_slot < gu_slot, \
-        f"slot(finalized)={finalized_slot} >= slot(GU)={gu_slot}"
-    assert gu.root != finalized, \
-        "GU == finalized (test not meaningful)"
+    assert gu.epoch + 1 == current_epoch, f"GU not fresh: {gu.epoch} + 1 != {current_epoch}"
+    assert confirmed_before != finalized, "Should have confirmations before FCR"
+    assert gu == head_uj, "GU != head's UJ"
+    assert finalized_slot < gu_slot, f"slot(finalized)={finalized_slot} >= slot(GU)={gu_slot}"
+    assert gu.root != finalized, "GU == finalized (test not meaningful)"
 
     # Run FCR - should reset due to reconfirmation failure, then restart to GU
     fcr.run_fast_confirmation()
 
     # Verify restart to GU (not finalized)
-    assert store.confirmed_root == gu.root, \
-        "Should restart to GU"
-    assert store.confirmed_root != finalized, \
-        "Should NOT stay at finalized"
+    assert store.confirmed_root == gu.root, "Should restart to GU"
+    assert store.confirmed_root != finalized, "Should NOT stay at finalized"
 
     yield from fcr.get_test_artefacts()
 
-# test_reset_to_finality_but_no_restart_to_gu_because_gu_too_old_epoch can be considered 
+
+# test_reset_to_finality_but_no_restart_to_gu_because_gu_too_old_epoch can be considered
 # also for this test case scenario. See test_revert_finality.py
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -131,7 +113,7 @@ def test_fcr_restarts_to_gu_when_all_conditions_met(spec, state):
 def test_fcr_no_restart_to_gu_mid_epoch(spec, state):
     """
     Test that restart-to-GU only triggers at epoch boundaries, not mid-epoch.
-    
+
     Scenario:
     1. Epochs 0-2: 100% participation, confirmations advance
     2. Mid-epoch 3: Drop to 20% participation
@@ -145,14 +127,14 @@ def test_fcr_no_restart_to_gu_mid_epoch(spec, state):
 
     S = spec.SLOTS_PER_EPOCH
 
-    # Epochs 0-2: Full participation 
+    # Epochs 0-2: Full participation
     while fcr.current_slot() < 3 * S:
         fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
 
     confirmed_after_epoch2 = store.confirmed_root
     assert spec.get_block_epoch(store, confirmed_after_epoch2) == spec.Epoch(2)
 
-    # Early epoch 3: Continue 100% for a few slots  
+    # Early epoch 3: Continue 100% for a few slots
     epoch3_mid = 3 * S + S // 2
 
     while fcr.current_slot() < epoch3_mid:
@@ -167,17 +149,18 @@ def test_fcr_no_restart_to_gu_mid_epoch(spec, state):
 
     while fcr.current_slot() < 5 * S:
         fcr.next_slot_with_block_and_fast_confirmation(participation_rate=20)
-        
+
         current_confirmed = store.confirmed_root
-        
+
         # Confirmed should be monotonic (same or descendant), never jump backward
-        assert current_confirmed == prev_confirmed or \
-               spec.is_ancestor(store, prev_confirmed, current_confirmed), \
-            f"Confirmed should be monotonic mid-epoch, not restart to GU"
-        
+        assert current_confirmed == prev_confirmed or spec.is_ancestor(
+            store, prev_confirmed, current_confirmed
+        ), "Confirmed should be monotonic mid-epoch, not restart to GU"
+
         prev_confirmed = current_confirmed
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -190,7 +173,7 @@ def test_fcr_no_restart_to_gu_mid_epoch(spec, state):
 def test_fcr_no_restart_to_gu_because_gu_too_old(spec, state):
     """
     Test that restart-to-GU fails when GU.epoch < current_epoch - 1.
-    
+
     Scenario:
     1. Epochs 0-2: 100% participation, confirmations advance
     2. Mid-epoch 3: Drop to 20% participation
@@ -207,14 +190,14 @@ def test_fcr_no_restart_to_gu_because_gu_too_old(spec, state):
 
     S = spec.SLOTS_PER_EPOCH
 
-    # Epochs 0-2: Full participation 
+    # Epochs 0-2: Full participation
     while fcr.current_slot() < 3 * S:
         fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
 
     confirmed_after_epoch2 = store.confirmed_root
     assert spec.get_block_epoch(store, confirmed_after_epoch2) == spec.Epoch(2)
 
-    # Early epoch 3: Continue 100% for a few slots  
+    # Early epoch 3: Continue 100% for a few slots
     epoch3_mid = 3 * S + S // 2
 
     while fcr.current_slot() < epoch3_mid:
@@ -249,12 +232,14 @@ def test_fcr_no_restart_to_gu_because_gu_too_old(spec, state):
 
     # Verify preconditions:
     # 1. b_cand is too old (should trigger reset)
-    assert confirmed_epoch_before < current_epoch - 1, \
+    assert confirmed_epoch_before < current_epoch - 1, (
         f"b_cand epoch {confirmed_epoch_before} should be < {current_epoch - 1}"
-    
+    )
+
     # 2. GU is stale (restart-to-GU should fail)
-    assert gu.epoch < current_epoch - 1, \
+    assert gu.epoch < current_epoch - 1, (
         f"GU epoch {gu.epoch} should be < {current_epoch - 1} (stale)"
+    )
 
     # Run FCR
     fcr.run_fast_confirmation()
@@ -262,11 +247,13 @@ def test_fcr_no_restart_to_gu_because_gu_too_old(spec, state):
     confirmed_after = store.confirmed_root
 
     # Should have reset to finalized
-    assert confirmed_after == finalized.root, \
+    assert confirmed_after == finalized.root, (
         f"Should reset to finalized, not stay at {confirmed_before}"
+    )
 
     # Should NOT have restarted to GU (because GU is too old)
-    assert confirmed_after != gu.root or gu.root == finalized.root, \
-        f"Should not restart to GU when GU is stale"
+    assert confirmed_after != gu.root or gu.root == finalized.root, (
+        "Should not restart to GU when GU is stale"
+    )
 
     yield from fcr.get_test_artefacts()
