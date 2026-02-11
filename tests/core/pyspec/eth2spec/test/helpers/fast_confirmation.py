@@ -175,7 +175,12 @@ class FCRTest:
             return self.spec.MAX_ATTESTATIONS
 
     def add_and_apply_block(
-        self, parent_root=None, release_att_pool=True, graffiti: str = None, include_atts=True
+        self,
+        parent_root=None,
+        release_att_pool=True,
+        graffiti: str = None,
+        include_atts=True,
+        attestations=None,
     ):
         if parent_root is None:
             parent_root = self.head()
@@ -194,7 +199,10 @@ class FCRTest:
         # Build a block for current_slot with attestations from pool
         # build_empty_block will advance the state to current_slot if necessary
         block = build_empty_block(self.spec, parent_state, current_slot)
-        if include_atts:
+        if attestations is not None:
+            for attestation in attestations[: self.max_attestations()]:
+                block.body.attestations.append(attestation)
+        elif include_atts:
             for attestation in self.attestation_pool[: self.max_attestations()]:
                 block.body.attestations.append(attestation)
 
@@ -212,7 +220,7 @@ class FCRTest:
 
         return block.hash_tree_root()
 
-    def attest(self, block_root=None, slot=None, participation_rate=100):
+    def attest(self, block_root=None, slot=None, participation_rate=100, include_in_pool=True):
         assert 0 <= participation_rate <= 100
 
         # Do not attest if participation is zero
@@ -253,7 +261,8 @@ class FCRTest:
             block_root,
             participation_fn=(lambda slot, index, committee: committee - sleepy_participants),
         )
-        self.attestation_pool.extend(attestations)
+        if include_in_pool:
+            self.attestation_pool.extend(attestations)
 
         # Yield test data
         for attestation in attestations:
@@ -281,9 +290,19 @@ class FCRTest:
         )
 
     def next_slot_with_block_and_apply_attestations(
-        self, participation_rate=100, parent_root=None, graffiti=None
+        self,
+        participation_rate=100,
+        parent_root=None,
+        graffiti=None,
+        release_att_pool=True,
+        include_atts=True,
     ):
-        block_root = self.add_and_apply_block(parent_root=parent_root, graffiti=graffiti)
+        block_root = self.add_and_apply_block(
+            parent_root=parent_root,
+            graffiti=graffiti,
+            release_att_pool=release_att_pool,
+            include_atts=include_atts,
+        )
         attestations = self.attest(
             block_root=self.head(), slot=self.current_slot(), participation_rate=participation_rate
         )
@@ -292,10 +311,15 @@ class FCRTest:
         return block_root
 
     def next_slot_with_block_and_fast_confirmation(
-        self, participation_rate=100, parent_root=None, graffiti=None
+        self,
+        participation_rate=100,
+        parent_root=None,
+        graffiti=None,
+        release_att_pool=True,
+        include_atts=True,
     ):
         block_root = self.next_slot_with_block_and_apply_attestations(
-            participation_rate, parent_root, graffiti
+            participation_rate, parent_root, graffiti, release_att_pool, include_atts
         )
         self.run_fast_confirmation()
         return block_root

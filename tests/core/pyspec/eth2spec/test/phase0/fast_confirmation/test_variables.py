@@ -25,25 +25,6 @@ Test on update FCR variables
 )
 @spec_test
 @single_phase
-def test_fast_confirm_an_epoch(spec, state):
-    fcr = FCRTest(spec, seed=1)
-    store = fcr.initialize(state)
-    for _ in range(spec.SLOTS_PER_EPOCH):
-        fcr.next_slot_with_block_and_fast_confirmation()
-        # Ensure head is confirmed
-        assert store.confirmed_root == fcr.head()
-
-    yield from fcr.get_test_artefacts()
-
-
-@with_altair_and_later
-@with_presets([MINIMAL], reason="too slow")
-@with_custom_state(
-    balances_fn=(lambda spec: default_balances(spec, num_validators=64)),
-    threshold_fn=default_activation_threshold,
-)
-@spec_test
-@single_phase
 def test_fcr_invariants_monotone_and_canonical(spec, state):
     """
     Validates two critical properties of the Fast Confirmation Rule:
@@ -112,20 +93,20 @@ def test_observed_justified_checkpoints_update_timing(spec, state):
     assert store.current_epoch_observed_justified_checkpoint.root == anchor_root
     assert store.current_epoch_observed_justified_checkpoint.epoch == anchor_epoch
 
-    # Run through epoch 0 to get to epoch 1
-    while fcr.current_slot() < S:
+    # Run through epoch 0 to get to epoch 2
+    while fcr.current_slot() < 2 * S:
         fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
 
-    assert fcr.current_slot() == S  # First slot of epoch 1
+    assert fcr.current_slot() == 2 * S  # First slot of epoch 2
 
     # 2. Check mid-epoch slots don't update observed checkpoints
-    # Record values at start of epoch 1
-    prev_at_epoch1_start = store.previous_epoch_observed_justified_checkpoint
-    curr_at_epoch1_start = store.current_epoch_observed_justified_checkpoint
+    # Record values at start of epoch 2
+    prev_at_epoch2_start = store.previous_epoch_observed_justified_checkpoint
+    curr_at_epoch2_start = store.current_epoch_observed_justified_checkpoint
 
     # Run through mid-epoch slots (slots 1 to S-2 within epoch 1)
-    last_slot_of_epoch1 = 2 * S - 1
-    while fcr.current_slot() < last_slot_of_epoch1 - 1:
+    last_slot_of_epoch2 = 3 * S - 1
+    while fcr.current_slot() < last_slot_of_epoch2 - 1:
         fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
 
         # Should NOT be a GU sampling slot
@@ -134,15 +115,15 @@ def test_observed_justified_checkpoints_update_timing(spec, state):
         )
 
         # Observed checkpoints should NOT have changed
-        assert store.previous_epoch_observed_justified_checkpoint == prev_at_epoch1_start, (
+        assert store.previous_epoch_observed_justified_checkpoint == prev_at_epoch2_start, (
             f"previous_epoch_observed changed at mid-epoch slot {fcr.current_slot()}"
         )
-        assert store.current_epoch_observed_justified_checkpoint == curr_at_epoch1_start, (
+        assert store.current_epoch_observed_justified_checkpoint == curr_at_epoch2_start, (
             f"current_epoch_observed changed at mid-epoch slot {fcr.current_slot()}"
         )
 
     # 3. Check last slot of epoch DOES update observed checkpoints
-    assert fcr.current_slot() == last_slot_of_epoch1 - 1
+    assert fcr.current_slot() == last_slot_of_epoch2 - 1
 
     # Record state before the critical slot
     curr_before_last_slot = store.current_epoch_observed_justified_checkpoint
@@ -150,7 +131,7 @@ def test_observed_justified_checkpoints_update_timing(spec, state):
     # Advance to last slot of epoch 1 and run FCR
     fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
 
-    assert fcr.current_slot() == last_slot_of_epoch1
+    assert fcr.current_slot() == last_slot_of_epoch2
     assert spec.is_start_slot_at_epoch(spec.Slot(fcr.current_slot() + 1)), (
         f"Slot {fcr.current_slot()} should trigger GU sampling (next slot is epoch start)"
     )

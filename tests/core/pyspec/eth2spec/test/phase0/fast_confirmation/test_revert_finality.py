@@ -8,15 +8,10 @@ from eth2spec.test.context import (
     with_custom_state,
     with_presets,
 )
-from eth2spec.test.helpers.attestations import get_valid_attestations_for_block_at_slot
-from eth2spec.test.helpers.block import (
-    build_empty_block,  # NOTE: build_empty_block (not _for_next_slot)
-)
 from eth2spec.test.helpers.fast_confirmation import (
     FCRTest,
+    SystemRun,
 )
-from eth2spec.test.helpers.fork_choice import add_block
-from eth2spec.test.helpers.state import state_transition_and_sign_block
 
 """
 Test on revert to finality
@@ -252,45 +247,25 @@ def test_fcr_reverts_to_finalized_when_confirmed_not_canonical_at_epoch_boundary
         fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
 
     # Create fork point R
-    r_root = fcr.add_and_apply_block(parent_root=fcr.head(), graffiti="R")
-    fcr.attest(block_root=r_root, slot=fcr.current_slot(), participation_rate=100)
-    fcr.next_slot()
-    fcr.apply_attestations()
-    fcr.attestation_pool = []
-    fcr.run_fast_confirmation()
+    r_root = fcr.next_slot_with_block_and_fast_confirmation(
+        parent_root=fcr.head(), graffiti="R", participation_rate=100
+    )
 
     # Create siblings A and M at current slot
-    fork_slot = fcr.current_slot()
-    prev_atts = list(fcr.attestation_pool)
 
     # A block
-    a_root = fcr.add_and_apply_block(parent_root=r_root, graffiti="A")
+    a_root = fcr.add_and_apply_block(parent_root=r_root, graffiti="A", release_att_pool=True)
 
     # M block (sibling)
-    parent_state = store.block_states[r_root].copy()
-    m_block = build_empty_block(spec, parent_state, fork_slot)
-    for att in prev_atts:
-        m_block.body.attestations.append(att)
-    m_block.body.graffiti = b"M".ljust(32, b"\x00")
-    signed_m = state_transition_and_sign_block(spec, parent_state, m_block)
-    for artefact in add_block(spec, store, signed_m, fcr.test_steps):
-        fcr.blockchain_artefacts.append(artefact)
-    m_root = signed_m.message.hash_tree_root()
+    m_root = fcr.add_and_apply_block(parent_root=r_root, graffiti="M")
 
     # Build up A-side with strong votes
-    fcr.attest(block_root=a_root, slot=fork_slot, participation_rate=100)
-    fcr.next_slot()
-    fcr.apply_attestations()
-    fcr.attestation_pool = []
-    fcr.run_fast_confirmation()
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=a_root, participation_rate=100)
 
     # Extend A-side for one more slot to get confirmation on A-side
-    a_tip = fcr.add_and_apply_block(parent_root=a_root, graffiti="A_tip")
-    fcr.attest(block_root=a_tip, slot=fcr.current_slot(), participation_rate=100)
-    fcr.next_slot()
-    fcr.apply_attestations()
-    fcr.attestation_pool = []
-    fcr.run_fast_confirmation()
+    fcr.next_slot_with_block_and_fast_confirmation(
+        parent_root=a_root, graffiti="A_tip", participation_rate=100
+    )
 
     # Verify confirmed is on A-side
     head = fcr.head()
@@ -304,14 +279,7 @@ def test_fcr_reverts_to_finalized_when_confirmed_not_canonical_at_epoch_boundary
 
     # Now vote 100% for M for remaining slots until epoch boundary
     # Extend M-side to accumulate enough weight to flip head
-    m_tip = m_root
-    while fcr.current_slot() < epoch2_start:
-        m_tip = fcr.add_and_apply_block(parent_root=m_tip, graffiti=f"M_{fcr.current_slot()}")
-        fcr.attest(block_root=m_tip, slot=fcr.current_slot(), participation_rate=100)
-        fcr.next_slot()
-        fcr.apply_attestations()
-        fcr.attestation_pool = []
-        fcr.run_fast_confirmation()
+    fcr.execute_run(SystemRun(end_slot=epoch2_start, branch_root=m_root, participation_rate=100))
 
     # Now at epoch 2 start — FCR already ran atomically at the boundary
     assert fcr.current_slot() == epoch2_start
@@ -367,44 +335,34 @@ def test_fcr_reverts_to_finalized_when_confirmed_not_canonical_mid_epoch(spec, s
     epoch2_start = 2 * S
 
     # Drive to epoch 2 start, then 2 slots into epoch 2 (mid-epoch)
-    fcr.run_slots_with_blocks_and_fast_confirmation(
-        epoch2_start - fcr.current_slot(), participation_rate=100
-    )
-    fcr.run_slots_with_blocks_and_fast_confirmation(2, participation_rate=100)
+    fcr.run_slots_with_blocks_and_fast_confirmation(epoch2_start + 2, participation_rate=100)
     assert fcr.current_slot() % S != 0  # mid-epoch
 
     # Build fork parent R at current slot; vote 100% for it; advance + apply + FCR
-    r_root = fcr.add_and_apply_block(parent_root=fcr.head())
-    fcr.attest_and_next_slot_with_fast_confirmation(block_root=r_root, participation_rate=100)
+    r_root = fcr.next_slot_with_block_and_fast_confirmation(
+        parent_root=fcr.head(), participation_rate=100
+    )
 
     # Now we are at the fork slot: create siblings A (canonical) and M (competing)
     fork_slot = fcr.current_slot()
     assert fork_slot % S != 0
 
-    # Save "previous-slot" attestations that should be included in blocks at fork_slot
-    prev_atts = list(fcr.attestation_pool)
-
     # Canonical child A at fork_slot
-    a_root = fcr.add_and_apply_block(parent_root=r_root)
+    # Do not release att pool to include attestations in both blocks
+    a_root = fcr.add_and_apply_block(parent_root=r_root, release_att_pool=False)
 
     # Competing sibling M at same parent/slot (manual build)
-    parent_state = store.block_states[r_root].copy()
-    competing_block = build_empty_block(spec, parent_state, fork_slot)
-    for att in prev_atts:
-        competing_block.body.attestations.append(att)
-    competing_block.body.graffiti = b"i_love_ethereum".ljust(32, b"\x00")
-
-    signed_m = state_transition_and_sign_block(spec, parent_state, competing_block)
-    for artefact in add_block(spec, store, signed_m, fcr.test_steps):
-        fcr.blockchain_artefacts.append(artefact)
-    m_root = signed_m.message.hash_tree_root()
+    m_root = fcr.add_and_apply_block(
+        parent_root=r_root, graffiti="i_love_ethereum", release_att_pool=True
+    )
 
     # Slot fork_slot: 75% attest to A; advance + apply + FCR
     fcr.attest_and_next_slot_with_fast_confirmation(block_root=a_root, participation_rate=75)
 
     # Next slot: build B on A; attest 100% to B; advance + apply + FCR
-    b_root = fcr.add_and_apply_block(parent_root=a_root)
-    fcr.attest_and_next_slot_with_fast_confirmation(block_root=b_root, participation_rate=100)
+    b_root = fcr.next_slot_with_block_and_fast_confirmation(
+        parent_root=a_root, participation_rate=100
+    )
 
     # By now we should have confirmed onto the A side
     assert spec.is_ancestor(store, store.confirmed_root, a_root), "Confirmed did not reach A"
@@ -774,193 +732,90 @@ def test_fcr_resets_when_bcand_not_descendant_of_gu_via_first_received_uj(spec, 
 
     # Epoch 2: Fork - RED and BLACK branches (empty attestation bodies)
     fork_point = fcr.head()
-    prev_atts = list(fcr.attestation_pool)
 
     # RED branch: C block
-    fork_state = store.block_states[fork_point].copy()
-    c_block = build_empty_block(spec, fork_state, fcr.current_slot())
-    c_block.body.graffiti = b"C_red".ljust(32, b"\x00")
-    for att in prev_atts:
-        c_block.body.attestations.append(att)
-    signed_c = state_transition_and_sign_block(spec, fork_state, c_block)
-    for artefact in add_block(spec, store, signed_c, fcr.test_steps):
-        fcr.blockchain_artefacts.append(artefact)
-    c_red = signed_c.message.hash_tree_root()
-
-    red_blocks_by_slot = {epoch2_start: c_red}
+    c_red = fcr.add_and_apply_block(
+        parent_root=fork_point, graffiti="C_red", release_att_pool=False
+    )
     red_tip = c_red
-    red_state = store.block_states[c_red].copy()
 
     # BLACK branch: C'' block
-    fcr.attestation_pool = list(prev_atts)
     c_double_prime = fcr.add_and_apply_block(
         parent_root=fork_point, graffiti="C_double_prime_black"
     )
     black_tip = c_double_prime
-    black_blocks_by_slot = {epoch2_start: c_double_prime}
 
-    fcr.attest(block_root=black_tip, slot=fcr.current_slot(), participation_rate=100)
-    fcr.next_slot()
-    fcr.apply_attestations()
-    fcr.attestation_pool = []
-    fcr.run_fast_confirmation()
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=black_tip, participation_rate=100)
 
+    red_attestations = []
     # Continue epoch 2 with empty attestation bodies
     while fcr.current_slot() < epoch3_start:
+        s = fcr.current_slot()
+
         # Extend RED branch
-        for s in range(epoch2_start + 1, fcr.current_slot()):
-            if s not in red_blocks_by_slot:
-                rb = build_empty_block(spec, red_state, s)
-                rb.body.graffiti = f"red_{s}".encode().ljust(32, b"\x00")
-                signed_rb = state_transition_and_sign_block(spec, red_state, rb)
-                for artefact in add_block(spec, store, signed_rb, fcr.test_steps):
-                    fcr.blockchain_artefacts.append(artefact)
-                red_tip = signed_rb.message.hash_tree_root()
-                red_blocks_by_slot[s] = red_tip
-                red_state = store.block_states[red_tip].copy()
+        red_tip = fcr.add_and_apply_block(
+            parent_root=red_tip, graffiti=f"red_{s}", include_atts=False
+        )
 
-        # Extend BLACK branch
-        parent_state = store.block_states[black_tip].copy()
-        black_block = build_empty_block(spec, parent_state, fcr.current_slot())
-        black_block.body.graffiti = f"black_e2_{fcr.current_slot()}".encode().ljust(32, b"\x00")
-        signed_black = state_transition_and_sign_block(spec, parent_state, black_block)
-        for artefact in add_block(spec, store, signed_black, fcr.test_steps):
-            fcr.blockchain_artefacts.append(artefact)
-        black_tip = signed_black.message.hash_tree_root()
-        black_blocks_by_slot[fcr.current_slot()] = black_tip
+        # Attest to RED but withhold attestations
+        red_atts_in_slot = fcr.attest(
+            block_root=red_tip, participation_rate=100, include_in_pool=False
+        )
+        red_attestations.extend(red_atts_in_slot)
 
-        fcr.attest(block_root=black_tip, slot=fcr.current_slot(), participation_rate=100)
-        fcr.next_slot()
-        fcr.apply_attestations()
-        fcr.attestation_pool = []
-        fcr.run_fast_confirmation()
-
-    # Complete red branch through epoch 2
-    for s in range(epoch2_start + 1, epoch3_start):
-        if s not in red_blocks_by_slot:
-            rb = build_empty_block(spec, red_state, s)
-            rb.body.graffiti = f"red_{s}".encode().ljust(32, b"\x00")
-            signed_rb = state_transition_and_sign_block(spec, red_state, rb)
-            for artefact in add_block(spec, store, signed_rb, fcr.test_steps):
-                fcr.blockchain_artefacts.append(artefact)
-            red_tip = signed_rb.message.hash_tree_root()
-            red_blocks_by_slot[s] = red_tip
-            red_state = store.block_states[red_tip].copy()
+        # Extend BLACK branch but do not include attestations in blocks
+        black_tip = fcr.next_slot_with_block_and_fast_confirmation(
+            parent_root=black_tip,
+            graffiti=f"black_e2_{s}",
+            include_atts=False,
+            participation_rate=100,
+        )
 
     assert fcr.current_slot() == epoch3_start
 
     # Epoch 3 start: Release 'a' FIRST with epoch 2 attestations → UJ = (C, 2)
-    a_block = build_empty_block(spec, red_state, fcr.current_slot())
-    a_block.body.graffiti = b"a_red_FIRST".ljust(32, b"\x00")
-
-    for att_slot in range(epoch2_start, epoch3_start):
-        if att_slot in red_blocks_by_slot:
-            block_root_for_att = red_blocks_by_slot[att_slot]
-            att_state = store.block_states[block_root_for_att].copy()
-            slot_attestations = get_valid_attestations_for_block_at_slot(
-                spec,
-                att_state,
-                spec.Slot(att_slot),
-                block_root_for_att,
-                participation_fn=lambda slot, index, committee: committee,
-            )
-            for att in slot_attestations:
-                if len(a_block.body.attestations) < spec.MAX_ATTESTATIONS:
-                    a_block.body.attestations.append(att)
-
-    signed_a = state_transition_and_sign_block(spec, red_state, a_block)
-    for artefact in add_block(spec, store, signed_a, fcr.test_steps):
-        fcr.blockchain_artefacts.append(artefact)
+    fcr.add_and_apply_block(
+        parent_root=red_tip,
+        graffiti="a_red_FIRST",
+        release_att_pool=False,
+        attestations=red_attestations,
+    )
 
     assert store.unrealized_justified_checkpoint.root == c_red
     assert store.unrealized_justified_checkpoint.epoch == spec.Epoch(2)
 
     # Release 'd' SECOND with epoch 2 attestations → internal UJ = (C'', 2), global stays (C, 2)
-    parent_state = store.block_states[black_tip].copy()
-    d_block = build_empty_block(spec, parent_state, fcr.current_slot())
-    d_block.body.graffiti = b"d_black_SECOND".ljust(32, b"\x00")
-
-    for att_slot in range(epoch2_start, epoch3_start):
-        if att_slot in black_blocks_by_slot:
-            block_root_for_att = black_blocks_by_slot[att_slot]
-            att_state = store.block_states[block_root_for_att].copy()
-            slot_attestations = get_valid_attestations_for_block_at_slot(
-                spec,
-                att_state,
-                spec.Slot(att_slot),
-                block_root_for_att,
-                participation_fn=lambda slot, index, committee: committee,
-            )
-            for att in slot_attestations:
-                if len(d_block.body.attestations) < spec.MAX_ATTESTATIONS:
-                    d_block.body.attestations.append(att)
-
-    signed_d = state_transition_and_sign_block(spec, parent_state, d_block)
-    for artefact in add_block(spec, store, signed_d, fcr.test_steps):
-        fcr.blockchain_artefacts.append(artefact)
-    d_root = signed_d.message.hash_tree_root()
+    d_root = fcr.add_and_apply_block(
+        parent_root=black_tip, graffiti="d_black_SECOND", include_atts=True
+    )
     black_tip = d_root
-    black_blocks_by_slot[fcr.current_slot()] = d_root
     epoch3_black_checkpoint = d_root
 
     assert store.unrealized_justified_checkpoint.root == c_red  # Global UJ still (C, 2)
 
-    fcr.attest(block_root=black_tip, slot=fcr.current_slot(), participation_rate=100)
-    fcr.next_slot()
-    fcr.apply_attestations()
-    fcr.attestation_pool = []
-    fcr.run_fast_confirmation()
+    fcr.attest_and_next_slot_with_fast_confirmation(
+        block_root=black_tip, slot=fcr.current_slot(), participation_rate=100
+    )
 
     # Continue epoch 3 with normal black blocks
     while fcr.current_slot() < epoch4_start - 1:
-        black_block = fcr.add_and_apply_block(
-            parent_root=black_tip, graffiti=f"black_e3_{fcr.current_slot()}"
+        black_tip = fcr.next_slot_with_block_and_fast_confirmation(
+            parent_root=black_tip, graffiti=f"black_e3_{fcr.current_slot()}", include_atts=False
         )
-        black_tip = black_block
-        black_blocks_by_slot[fcr.current_slot()] = black_block
-
-        fcr.attest(block_root=black_tip, slot=fcr.current_slot(), participation_rate=100)
-        fcr.next_slot()
-        fcr.apply_attestations()
-        fcr.attestation_pool = []
-        fcr.run_fast_confirmation()
 
     # Last slot of epoch 3: First run FCR (GU sampling), THEN release b'
     assert fcr.current_slot() == epoch4_start - 1
     assert spec.is_start_slot_at_epoch(spec.Slot(fcr.current_slot() + 1))
 
-    # Run FCR FIRST - this samples GU = (C, 2)
-    fcr.run_fast_confirmation()
-
+    # Check GU = (C, 2)
     gu = store.current_epoch_observed_justified_checkpoint
     assert gu.root == c_red
     assert gu.epoch == spec.Epoch(2)
 
     # NOW release b' with epoch 3 attestations → justifies (d_root, 3)
-    parent_state = store.block_states[black_tip].copy()
-    b_prime_block = build_empty_block(spec, parent_state, fcr.current_slot())
-    b_prime_block.body.graffiti = b"b_prime_LAST".ljust(32, b"\x00")
-
-    for att_slot in range(epoch3_start, fcr.current_slot()):
-        if att_slot in black_blocks_by_slot:
-            block_root_for_att = black_blocks_by_slot[att_slot]
-            att_state = store.block_states[block_root_for_att].copy()
-            slot_attestations = get_valid_attestations_for_block_at_slot(
-                spec,
-                att_state,
-                spec.Slot(att_slot),
-                block_root_for_att,
-                participation_fn=lambda slot, index, committee: committee,
-            )
-            for att in slot_attestations:
-                if len(b_prime_block.body.attestations) < spec.MAX_ATTESTATIONS:
-                    b_prime_block.body.attestations.append(att)
-
-    signed_b_prime = state_transition_and_sign_block(spec, parent_state, b_prime_block)
-    for artefact in add_block(spec, store, signed_b_prime, fcr.test_steps):
-        fcr.blockchain_artefacts.append(artefact)
-    b_prime = signed_b_prime.message.hash_tree_root()
-    black_tip = b_prime
+    b_prime = fcr.add_and_apply_block(
+        parent_root=black_tip, graffiti="b_prime_LAST", include_atts=True
+    )
 
     # Verify b' justifies (d_root, 3) on black branch
     uj_of_b_prime = store.unrealized_justifications.get(b_prime, None)
@@ -978,7 +833,6 @@ def test_fcr_resets_when_bcand_not_descendant_of_gu_via_first_received_uj(spec, 
     # Cross into Epoch 4
     fcr.next_slot()
     fcr.apply_attestations()
-    fcr.attestation_pool = []
 
     assert fcr.current_slot() == epoch4_start
     assert spec.is_start_slot_at_epoch(fcr.current_slot())
