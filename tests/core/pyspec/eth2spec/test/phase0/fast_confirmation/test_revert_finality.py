@@ -394,6 +394,7 @@ def test_fcr_reverts_to_finalized_when_confirmed_not_canonical_mid_epoch(spec, s
 
     yield from fcr.get_test_artefacts()
 
+
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
 @with_custom_state(
@@ -402,7 +403,9 @@ def test_fcr_reverts_to_finalized_when_confirmed_not_canonical_mid_epoch(spec, s
 )
 @spec_test
 @single_phase
-def test_fcr_reverts_when_reconfirmation_fails_at_epoch_start_due_to_late_equivocations(spec, state):
+def test_fcr_reverts_when_reconfirmation_fails_at_epoch_start_due_to_late_equivocations(
+    spec, state
+):
     """
     Reconfirmation fails at epoch boundary when late equivocations remove enough weight.
 
@@ -431,7 +434,6 @@ def test_fcr_reverts_when_reconfirmation_fails_at_epoch_start_due_to_late_equivo
     # Last slot of epoch 2: build block, attest, run FCR (samples GU)
     block_root = fcr.add_and_apply_block(parent_root=fcr.head())
     fcr.attest(block_root=block_root, slot=fcr.current_slot(), participation_rate=100)
-    fcr.run_fast_confirmation()
 
     confirmed_before = store.confirmed_root
     current_epoch = spec.Epoch(3)
@@ -441,56 +443,53 @@ def test_fcr_reverts_when_reconfirmation_fails_at_epoch_start_due_to_late_equivo
     # Confirmed in epoch 2, not too old for epoch 3
     confirmed_epoch = spec.get_block_epoch(store, confirmed_before)
     assert confirmed_epoch == spec.Epoch(2)
-    assert confirmed_epoch + 1 >= current_epoch, \
-        "Confirmed too old"
+    assert confirmed_epoch + 1 >= current_epoch, "Confirmed too old"
 
     # Confirmed on head chain
-    assert spec.is_ancestor(store, fcr.head(), confirmed_before), \
-        "Confirmed not on head chain"
+    assert spec.is_ancestor(store, fcr.head(), confirmed_before), "Confirmed not on head chain"
 
     # Confirmed above reconfirmation anchor
     gu_prev = store.previous_epoch_observed_justified_checkpoint
-    assert spec.is_ancestor(store, confirmed_before, gu_prev.root), \
+    assert spec.is_ancestor(store, confirmed_before, gu_prev.root), (
         "Confirmed not descendant of GU_prev"
-    assert confirmed_before != gu_prev.root, \
-        "No segment to reconfirm"
+    )
+    assert confirmed_before != gu_prev.root, "No segment to reconfirm"
 
     # Reconfirmation passes
-    assert spec.is_confirmed_chain_safe(store, confirmed_before), \
+    assert spec.is_confirmed_chain_safe(store, confirmed_before), (
         "Reconfirmation should pass before slashing"
+    )
 
-    # Inject late equivocations 
+    # Inject late equivocations
     equivocating_before = set(store.equivocating_indices)
     fcr.apply_attester_slashing(slashing_percentage=75, slot=fcr.current_slot())
-    assert len(store.equivocating_indices) > len(equivocating_before), \
-        "Slashing had no effect"
+    assert len(store.equivocating_indices) > len(equivocating_before), "Slashing had no effect"
 
     # Post-slashing
 
-    assert spec.is_ancestor(store, fcr.head(), confirmed_before), \
-        "Confirmed fell off head chain"
-    assert spec.get_block_epoch(store, confirmed_before) + 1 >= current_epoch, \
-        "Confirmed too old"
-    assert spec.is_ancestor(store, confirmed_before, gu_prev.root), \
-        "Ancestry broke"
+    assert spec.is_ancestor(store, fcr.head(), confirmed_before), "Confirmed fell off head chain"
+    assert spec.get_block_epoch(store, confirmed_before) + 1 >= current_epoch, "Confirmed too old"
+    assert spec.is_ancestor(store, confirmed_before, gu_prev.root), "Ancestry broke"
 
     # Reconfirmation fails
-    assert not spec.is_confirmed_chain_safe(store, confirmed_before), \
+    assert not spec.is_confirmed_chain_safe(store, confirmed_before), (
         "Reconfirmation should fail after 75% slashing"
+    )
 
-    # Cross into epoch 3 atomically 
+    # Cross into epoch 3 atomically
     fcr.next_slot()
     assert fcr.current_slot() == epoch3_start
     fcr.apply_attestations()
-    fcr.attestation_pool = []
     fcr.run_fast_confirmation()
 
     # Outcome: reset fired, restart-to-GU worked
     gu_at_epoch3 = store.current_epoch_observed_justified_checkpoint
-    assert store.confirmed_root != confirmed_before, \
+    assert store.confirmed_root != confirmed_before, (
         "Confirmed should have moved — reconfirmation failure not triggered"
-    assert store.confirmed_root == gu_at_epoch3.root, \
+    )
+    assert store.confirmed_root == gu_at_epoch3.root, (
         f"Expected restart to GU root, got {store.confirmed_root}"
+    )
 
     yield from fcr.get_test_artefacts()
 
