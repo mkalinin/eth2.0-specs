@@ -42,7 +42,7 @@
     - [`find_latest_confirmed_descendant`](#find_latest_confirmed_descendant)
     - [`get_latest_confirmed`](#get_latest_confirmed)
   - [Handlers](#handlers)
-    - [`on_slot_start_after_past_attestations_applied`](#on_slot_start_after_past_attestations_applied)
+    - [`on_fast_confirmation`](#on_fast_confirmation)
 
 <!-- mdformat-toc end -->
 
@@ -899,7 +899,7 @@ def get_latest_confirmed(store: Store) -> Root:
 
 ### Handlers
 
-#### `on_slot_start_after_past_attestations_applied`
+#### `on_fast_confirmation`
 
 *Notes:*
 
@@ -912,15 +912,20 @@ Implementations MUST strictly follow the call sequence:
 1. `update_fast_confirmation_variables`
 2. `get_latest_confirmed`
 
-Implementations MUST call `update_fast_confirmation_variables` at the start of a
-slot after attestations from past slots have been applied. Otherwise, the
+Implementations SHOULD call `update_fast_confirmation_variables` when either (a)
+a valid block from the expected block proposer for the assigned `slot` has been
+received and processed or (b) `get_attestation_due_ms(epoch)` milliseconds has
+transpired since the start of the slot -- whichever comes first.
+
+Implementations MUST NOT call `update_fast_confirmation_variables` later than
+`get_attestation_due_ms(epoch)` milliseconds into a slot. Otherwise, the
 synchrony assumption that the algorithm relies upon may not hold.
 
 Implementations MAY call `get_latest_confirmed` at any point in time throughout
 a slot.
 
 ```python
-def on_slot_start_after_past_attestations_applied(store: Store) -> None:
+def on_fast_confirmation(store: Store) -> None:
     update_fast_confirmation_variables(store)
     store.confirmed_root = get_latest_confirmed(store)
 ```
