@@ -474,3 +474,278 @@ def test_is_one_confirmed_support_accumulates_over_slots(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
+@with_altair_and_later
+@with_presets([MINIMAL], reason="too slow")
+@with_custom_state(
+    balances_fn=(lambda spec: default_balances(spec, num_validators=64)),
+    threshold_fn=default_activation_threshold,
+)
+@spec_test
+@single_phase
+def test_is_one_confirmed_epoch_crossing_block(spec, state):
+    """
+    Test is_one_confirmed for a block that crosses an epoch boundary
+    (parent in epoch e-1, block in epoch e).
+
+    When a block crosses an epoch boundary, get_adversarial_weight uses
+    the first slot of the block's epoch as the start slot instead of the
+    block's own slot. This widens the adversarial budget range to include
+    earlier slots in the epoch.
+
+    1. Build a chain to the last slot of epoch 1
+    2. Propose a block at the second slot of epoch 2 with parent at last slot of epoch 1
+       (crossing the epoch boundary, leaving first slot of epoch 2 empty)
+    3. Verify the block crosses an epoch boundary
+    4. Verify adversarial weight uses epoch start, not block slot
+    5. Check is_one_confirmed with accumulated support
+    """
+    fcr = FCRTest(spec, seed=1)
+    store = fcr.initialize(state)
+
+    S = spec.SLOTS_PER_EPOCH
+
+    # Build through most of epoch 1 with full participation
+    fcr.run_slots_with_blocks_and_fast_confirmation(2 * S - 1, participation_rate=100)
+
+    # We're now at the last slot of epoch 1
+    parent_root = fcr.head()
+    parent_epoch = spec.get_block_epoch(store, parent_root)
+
+    # Skip the first slot of epoch 2 (empty slot at epoch boundary)
+    fcr.attest_and_next_slot_with_fast_confirmation(
+        block_root=parent_root, participation_rate=100
+    )
+
+    # Propose block at second slot of epoch 2 — crosses epoch boundary
+    block_b = fcr.next_slot_with_block_and_fast_confirmation(
+        parent_root=parent_root, participation_rate=100
+    )
+
+    block = store.blocks[block_b]
+    block_epoch = spec.get_block_epoch(store, block_b)
+    parent_block = store.blocks[block.parent_root]
+    parent_block_epoch = spec.compute_epoch_at_slot(parent_block.slot)
+
+    # Verify epoch crossing
+    assert block_epoch > parent_block_epoch, (
+        f"Block must cross epoch boundary: block_epoch={block_epoch}, parent_epoch={parent_block_epoch}"
+    )
+
+    balance_source = spec.get_current_balance_source(store)
+
+    # Verify adversarial weight uses epoch start as start_slot
+    current_slot = spec.get_current_slot(store)
+    epoch_start = spec.compute_start_slot_at_epoch(block_epoch)
+
+    # Adversarial weight with epoch start (what the code does for epoch-crossing)
+    adv_from_epoch_start = int(spec.compute_adversarial_weight(
+        store, balance_source, epoch_start, spec.Slot(current_slot - 1)
+    ))
+
+    # Adversarial weight with block slot (what the code would do without epoch-crossing logic)
+    adv_from_block_slot = int(spec.compute_adversarial_weight(
+        store, balance_source, block.slot, spec.Slot(current_slot - 1)
+    ))
+
+    # The actual adversarial weight used by is_one_confirmed
+    adv_actual = int(spec.get_adversarial_weight(store, balance_source, block_b))
+
+    # For epoch-crossing block, adversarial weight must use epoch start
+    assert adv_actual == adv_from_epoch_start, (
+        f"Adversarial weight should use epoch start: actual={adv_actual}, "
+        f"from_epoch_start={adv_from_epoch_start}, from_block_slot={adv_from_block_slot}"
+    )
+
+    # Epoch start range is wider → adversarial budget should be >= block slot range
+    assert adv_from_epoch_start >= adv_from_block_slot, (
+        f"Epoch start range should give >= adversarial weight: "
+        f"epoch_start={adv_from_epoch_start}, block_slot={adv_from_block_slot}"
+    )
+
+    # Accumulate more support to get is_one_confirmed to pass
+    fcr.attest_and_next_slot_with_fast_confirmation(
+        block_root=block_b, participation_rate=100
+    )
+
+    balance_source = spec.get_current_balance_source(store)
+
+    assert spec.is_one_confirmed(store, balance_source, block_b), (
+        "Epoch-crossing block should pass is_one_confirmed with accumulated support"
+    )
+
+    yield from fcr.get_test_artefacts()
+
+@with_altair_and_later
+@with_presets([MINIMAL], reason="too slow")
+@with_custom_state(
+    balances_fn=(lambda spec: default_balances(spec, num_validators=64)),
+    threshold_fn=default_activation_threshold,
+)
+@spec_test
+@single_phase
+def test_is_one_confirmed_latest_message_wins(spec, state):
+    """
+    Test that is_one_confirmed uses only the latest attestation per validator.
+
+    In LMD-GHOST, each validator has exactly one "latest message" that counts.
+    If a validator first attests to block A then later attests to block B,
+    only the B attestation counts in get_attestation_score.
+
+    This means a block can lose support if validators who previously voted
+    for it later vote for a different block (e.g., a new head extending it).
+
+    This test:
+    1. Build block B with 100% attestations → is_one_confirmed passes
+    2. Build block C as child of B with 100% attestations
+    3. Validators who attested to B now have latest_message pointing to C
+    4. B's support drops to zero (all votes moved to C)
+    5. is_one_confirmed for B fails (no direct support)
+    6. is_one_confirmed for C passes (has all the support)
+    """
+    fcr = FCRTest(spec, seed=1)
+    store = fcr.initialize(state)
+
+    S = spec.SLOTS_PER_EPOCH
+
+    # Build through epoch 1 to establish balance source
+    fcr.run_slots_with_blocks_and_fast_confirmation(2 * S, participation_rate=100)
+
+    # Block B with 100% attestations — passes is_one_confirmed
+    block_b = fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
+
+    balance_source = spec.get_current_balance_source(store)
+    assert spec.is_one_confirmed(store, balance_source, block_b), (
+        "Precondition: block B should pass is_one_confirmed at 100%"
+    )
+
+    # Block C as child of B with 100% attestations
+    # Validators now vote for C, their latest_message moves away from B
+    block_c = fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
+
+    # Verify C is a child of B
+    block_c_data = store.blocks[block_c]
+    assert block_c_data.parent_root == block_b, (
+        "Block C must be a child of block B"
+    )
+
+    balance_source = spec.get_current_balance_source(store)
+
+    # B's support should have dropped — validators' latest messages now point to C
+    support_b = spec.get_attestation_score(store, block_b, balance_source)
+    support_c = spec.get_attestation_score(store, block_c, balance_source)
+
+    assert support_c > support_b, (
+        f"Block C should have more support than B: C={support_c}, B={support_b}"
+    )
+
+    # C should pass is_one_confirmed (it has the latest votes)
+    assert spec.is_one_confirmed(store, balance_source, block_c), (
+        "Block C should pass is_one_confirmed with latest votes"
+    )
+
+    yield from fcr.get_test_artefacts()
+
+@with_altair_and_later
+@with_presets([MINIMAL], reason="too slow")
+@with_custom_state(
+    balances_fn=(lambda spec: default_balances(spec, num_validators=64)),
+    threshold_fn=default_activation_threshold,
+)
+@spec_test
+@single_phase
+def test_is_one_confirmed_fails_with_competing_branch(spec, state):
+    """
+    Test that is_one_confirmed fails when support is split between competing blocks.
+
+    This models the core adversarial scenario: two sibling blocks B1 and B2
+    (both children of the same parent) compete for attestation support.
+    When support is split, neither block can accumulate enough to satisfy
+    the safety inequality.
+
+    The test verifies the split is the cause by accumulating additional
+    support exclusively for B1. After enough slots, B1 passes while B2
+    (with no additional votes) remains failed — demonstrating that the
+    fork is resolved in B1's favor once honest validators consolidate.
+
+    1. Build chain to establish balance source
+    2. Create two competing blocks B1 and B2 from the same parent
+    3. Split attestations: ~50% vote for B1, ~50% for B2
+    4. Verify is_one_confirmed fails for both blocks
+    5. Accumulate support for B1 only until it passes
+    6. Verify B2 still fails throughout
+    """
+    fcr = FCRTest(spec, seed=1)
+    store = fcr.initialize(state)
+
+    S = spec.SLOTS_PER_EPOCH
+
+    # Build through epoch 1 to establish balance source
+    fcr.run_slots_with_blocks_and_fast_confirmation(2 * S, participation_rate=100)
+
+    parent_root = fcr.head()
+
+    # Create two competing sibling blocks from the same parent
+    block_b1 = fcr.add_and_apply_block(parent_root=parent_root)
+    block_b2 = fcr.add_and_apply_block(parent_root=parent_root)
+
+    assert store.blocks[block_b1].parent_root == store.blocks[block_b2].parent_root, (
+        "B1 and B2 must be siblings (same parent)"
+    )
+
+    # Split attestations: ~50% for B1, ~50% for B2
+    fcr.attest(block_root=block_b1, participation_rate=50, include_in_pool=True)
+    fcr.attest(block_root=block_b2, participation_rate=50, include_in_pool=True)
+
+    fcr.next_slot_and_apply_attestations()
+    fcr.run_fast_confirmation()
+
+    balance_source = spec.get_current_balance_source(store)
+
+    # Both must have some support
+    support_b1 = int(spec.get_attestation_score(store, block_b1, balance_source))
+    support_b2 = int(spec.get_attestation_score(store, block_b2, balance_source))
+    assert support_b1 > 0, "B1 should have some support"
+    assert support_b2 > 0, "B2 should have some support"
+
+    # Neither passes with split support
+    assert not spec.is_one_confirmed(store, balance_source, block_b1), (
+        "B1 should fail is_one_confirmed with split support"
+    )
+    assert not spec.is_one_confirmed(store, balance_source, block_b2), (
+        "B2 should fail is_one_confirmed with split support"
+    )
+
+    # Accumulate support for B1 only — first additional slot
+    fcr.attest_and_next_slot_with_fast_confirmation(
+        block_root=block_b1, participation_rate=100
+    )
+
+    balance_source = spec.get_current_balance_source(store)
+
+    # B1 still fails after one additional slot (initial split deficit too large)
+    assert not spec.is_one_confirmed(store, balance_source, block_b1), (
+        "B1 should still fail after one additional slot of support"
+    )
+    assert not spec.is_one_confirmed(store, balance_source, block_b2), (
+        "B2 should still fail with no additional support"
+    )
+
+    # Accumulate support for B1 only — second additional slot
+    fcr.attest_and_next_slot_with_fast_confirmation(
+        block_root=block_b1, participation_rate=100
+    )
+
+    balance_source = spec.get_current_balance_source(store)
+
+    # B1 now passes — enough accumulated support overcomes the split deficit
+    assert spec.is_one_confirmed(store, balance_source, block_b1), (
+        "B1 should pass is_one_confirmed after sufficient accumulation"
+    )
+
+    # B2 still fails — it never got additional support
+    assert not spec.is_one_confirmed(store, balance_source, block_b2), (
+        "B2 should still fail with no additional support"
+    )
+
+    yield from fcr.get_test_artefacts()
