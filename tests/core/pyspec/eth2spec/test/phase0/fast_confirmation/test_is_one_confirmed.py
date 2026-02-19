@@ -749,3 +749,70 @@ def test_is_one_confirmed_fails_with_competing_branch(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
+@with_altair_and_later
+@with_presets([MINIMAL], reason="too slow")
+@with_custom_state(
+    balances_fn=(lambda spec: default_balances(spec, num_validators=64)),
+    threshold_fn=default_activation_threshold,
+)
+@spec_test
+@single_phase
+def test_is_confirmed_chain_safe_passes_full_chain(spec, state):
+    """
+    Test that is_confirmed_chain_safe returns True when the entire chain
+    from the anchor checkpoint to the confirmed block has full participation.
+
+    is_confirmed_chain_safe walks from the confirmed block back to the
+    checkpoint block, checking is_one_confirmed on every block along the
+    way. If any block fails, the whole chain fails. With 100% participation,
+    every block should individually pass, and the chain check should succeed.
+
+    This test verifies:
+    1. confirmed_root advances beyond genesis (FCR confirms blocks)
+    2. The confirmed chain has multiple blocks 
+    3. is_confirmed_chain_safe returns True for the confirmed root
+    4. Every individual block in the chain passes is_one_confirmed
+    """
+    fcr = FCRTest(spec, seed=1)
+    store = fcr.initialize(state)
+
+    S = spec.SLOTS_PER_EPOCH
+
+    # Build through epoch 2 with 100% participation
+    fcr.run_slots_with_blocks_and_fast_confirmation(3 * S, participation_rate=100)
+
+    confirmed_root = store.confirmed_root
+
+    # Confirmed root must have advanced beyond genesis
+    assert confirmed_root != state.latest_block_header.parent_root, (
+        "confirmed_root should have advanced beyond genesis"
+    )
+
+    # Verify is_confirmed_chain_safe passes
+    assert spec.is_confirmed_chain_safe(store, confirmed_root), (
+        "is_confirmed_chain_safe should pass with 100% participation"
+    )
+
+    # Walk the chain from confirmed_root back toward the anchor and verify
+    # each block individually passes is_one_confirmed
+    balance_source = spec.get_previous_balance_source(store)
+    block_root = confirmed_root
+    anchor_root = store.previous_epoch_observed_justified_checkpoint.root
+    blocks_checked = 0
+
+    while block_root != anchor_root:
+        block = store.blocks[block_root]
+        assert spec.is_one_confirmed(store, balance_source, block_root), (
+            f"Block at slot {block.slot} should individually pass is_one_confirmed"
+        )
+        block_root = block.parent_root
+        blocks_checked += 1
+
+    # The chain should have multiple blocks (non-trivial walk)
+    assert blocks_checked > 1, (
+        f"Expected multi-block chain, only checked {blocks_checked} blocks"
+    )
+
+    yield from fcr.get_test_artefacts()
+
