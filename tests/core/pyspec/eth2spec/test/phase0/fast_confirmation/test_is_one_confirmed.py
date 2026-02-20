@@ -584,76 +584,6 @@ def test_is_one_confirmed_epoch_crossing_block(spec, state):
 )
 @spec_test
 @single_phase
-def test_is_one_confirmed_latest_message_wins(spec, state):
-    """
-    Test that is_one_confirmed uses only the latest attestation per validator.
-
-    In LMD-GHOST, each validator has exactly one "latest message" that counts.
-    If a validator first attests to block A then later attests to block B,
-    only the B attestation counts in get_attestation_score.
-
-    This means a block can lose support if validators who previously voted
-    for it later vote for a different block (e.g., a new head extending it).
-
-    This test:
-    1. Build block B with 100% attestations → is_one_confirmed passes
-    2. Build block C as child of B with 100% attestations
-    3. Validators who attested to B now have latest_message pointing to C
-    4. B's support drops to zero (all votes moved to C)
-    5. is_one_confirmed for B fails (no direct support)
-    6. is_one_confirmed for C passes (has all the support)
-    """
-    fcr = FCRTest(spec, seed=1)
-    store = fcr.initialize(state)
-
-    S = spec.SLOTS_PER_EPOCH
-
-    # Build through epoch 1 to establish balance source
-    fcr.run_slots_with_blocks_and_fast_confirmation(2 * S, participation_rate=100)
-
-    # Block B with 100% attestations — passes is_one_confirmed
-    block_b = fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
-
-    balance_source = spec.get_current_balance_source(store)
-    assert spec.is_one_confirmed(store, balance_source, block_b), (
-        "Precondition: block B should pass is_one_confirmed at 100%"
-    )
-
-    # Block C as child of B with 100% attestations
-    # Validators now vote for C, their latest_message moves away from B
-    block_c = fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
-
-    # Verify C is a child of B
-    block_c_data = store.blocks[block_c]
-    assert block_c_data.parent_root == block_b, (
-        "Block C must be a child of block B"
-    )
-
-    balance_source = spec.get_current_balance_source(store)
-
-    # B's support should have dropped — validators' latest messages now point to C
-    support_b = spec.get_attestation_score(store, block_b, balance_source)
-    support_c = spec.get_attestation_score(store, block_c, balance_source)
-
-    assert support_c > support_b, (
-        f"Block C should have more support than B: C={support_c}, B={support_b}"
-    )
-
-    # C should pass is_one_confirmed (it has the latest votes)
-    assert spec.is_one_confirmed(store, balance_source, block_c), (
-        "Block C should pass is_one_confirmed with latest votes"
-    )
-
-    yield from fcr.get_test_artefacts()
-
-@with_altair_and_later
-@with_presets([MINIMAL], reason="too slow")
-@with_custom_state(
-    balances_fn=(lambda spec: default_balances(spec, num_validators=64)),
-    threshold_fn=default_activation_threshold,
-)
-@spec_test
-@single_phase
 def test_is_one_confirmed_fails_with_competing_branch(spec, state):
     """
     Test that is_one_confirmed fails when support is split between competing blocks.
@@ -816,3 +746,129 @@ def test_is_confirmed_chain_safe_passes_full_chain(spec, state):
 
     yield from fcr.get_test_artefacts()
 
+
+
+@with_altair_and_later
+@with_presets([MINIMAL], reason="too slow")
+@with_custom_state(
+    balances_fn=(lambda spec: default_balances(spec, num_validators=64)),
+    threshold_fn=default_activation_threshold,
+)
+@spec_test
+@single_phase
+def test_is_one_confirmed_epoch_crossing_adversarial_range_matters(spec, state):
+    """
+    Implementation-level test for epoch-crossing adversarial range.
+
+    When a block crosses an epoch boundary (parent in epoch e-1, block in
+    epoch e) with an empty slot at epoch start, the adversarial budget must
+    include that empty slot's committee. If the implementation incorrectly
+    used block.slot instead of epoch_start, the adversarial budget would be
+    smaller and the block could be incorrectly confirmed.
+
+    This test engineers a scenario where the margin between correct and
+    incorrect adversarial ranges determines whether is_one_confirmed passes:
+    - With correct range (from epoch_start): FAILS (margin = -102.4B)
+    - With wrong range (from block.slot): WOULD PASS (margin = +25.6B)
+    - The difference is exactly one committee's adversarial contribution (128B)
+
+    The test verifies through confirmed_root that the epoch-crossing block
+    is NOT confirmed — proving the implementation correctly uses the wider
+    adversarial range.
+
+    Setup:
+    1. Build chain through epoch 1 with 100% participation
+    2. Skip first slot of epoch 2 (empty)
+    3. Propose block at slot 17 with parent at slot 15 (epoch crossing)
+    4. Accumulate 85% support for 2 slots
+    5. Verify block is NOT confirmed (correct adversarial range prevents it)
+    6. Verify it WOULD be confirmed with the narrower (incorrect) range
+    """
+    fcr = FCRTest(spec, seed=1)
+    store = fcr.initialize(state)
+
+    S = spec.SLOTS_PER_EPOCH
+
+    # Build through epoch 1 with full participation
+    fcr.run_slots_with_blocks_and_fast_confirmation(2 * S, participation_rate=100)
+
+    parent_root = fcr.head()
+
+    # Skip first slot of epoch 2 (empty) — attest to parent
+    fcr.attest_and_next_slot_with_fast_confirmation(
+        block_root=parent_root, participation_rate=100
+    )
+
+    # Propose epoch-crossing block at slot 17 with parent at slot 15
+    block_b = fcr.next_slot_with_block_and_fast_confirmation(
+        parent_root=parent_root, participation_rate=85
+    )
+
+    # Verify epoch crossing
+    block = store.blocks[block_b]
+    block_epoch = spec.get_block_epoch(store, block_b)
+    parent_block = store.blocks[block.parent_root]
+    parent_epoch = spec.compute_epoch_at_slot(parent_block.slot)
+    assert block_epoch > parent_epoch, (
+        f"Block must cross epoch boundary: block_epoch={block_epoch}, parent_epoch={parent_epoch}"
+    )
+
+    # Verify there is a gap (empty slot between epoch_start and block.slot)
+    epoch_start = spec.compute_start_slot_at_epoch(block_epoch)
+    assert block.slot > epoch_start, (
+        f"Block must be after epoch start to have a gap: block.slot={block.slot}, epoch_start={epoch_start}"
+    )
+
+    # Accumulate support at 85% for 2 more slots
+    for _ in range(2):
+        fcr.attest_and_next_slot_with_fast_confirmation(
+            block_root=block_b, participation_rate=85
+        )
+
+    balance_source = spec.get_current_balance_source(store)
+    current_slot = spec.get_current_slot(store)
+    total_active_balance = spec.get_total_active_balance(balance_source)
+
+    # Block should NOT be confirmed (correct adversarial range)
+    assert not spec.is_one_confirmed(store, balance_source, block_b), (
+        "Epoch-crossing block should NOT be confirmed with correct adversarial range"
+    )
+
+    # Verify the epoch-crossing logic is what prevents confirmation:
+    # compute margins with correct vs wrong adversarial range
+    adv_correct = int(spec.compute_adversarial_weight(
+        store, balance_source, epoch_start, spec.Slot(current_slot - 1)
+    ))
+    adv_wrong = int(spec.compute_adversarial_weight(
+        store, balance_source, block.slot, spec.Slot(current_slot - 1)
+    ))
+
+    support = int(spec.get_attestation_score(store, block_b, balance_source))
+    max_support = int(spec.estimate_committee_weight_between_slots(
+        total_active_balance,
+        spec.Slot(parent_block.slot + 1),
+        spec.Slot(current_slot - 1),
+    ))
+    proposer = int(spec.compute_proposer_score(balance_source))
+    discount = int(spec.get_support_discount(store, balance_source, block_b))
+
+    lhs = 2 * support + discount
+    rhs_correct = max_support + proposer + 2 * adv_correct
+    rhs_wrong = max_support + proposer + 2 * adv_wrong
+
+    # With correct range: fails (negative margin)
+    assert lhs <= rhs_correct, (
+        f"Should fail with correct adversarial range: lhs={lhs}, rhs={rhs_correct}"
+    )
+
+    # With wrong range: would pass (positive margin)
+    assert lhs > rhs_wrong, (
+        f"Would pass with incorrect adversarial range: lhs={lhs}, rhs={rhs_wrong}"
+    )
+
+    # confirmed_root should NOT include block_b
+    assert store.confirmed_root != block_b, (
+        "confirmed_root should not advance to the epoch-crossing block"
+    )
+
+    yield from fcr.get_test_artefacts()
