@@ -9,6 +9,7 @@ from eth2spec.test.context import (
     with_presets,
 )
 from eth2spec.test.helpers.fast_confirmation import (
+    debug_print,
     FCRTest,
     SystemRun,
 )
@@ -65,10 +66,12 @@ def test_fcr_restarts_to_gu_when_all_conditions_met(spec, state):
     fcr.apply_attestations(lslot_atts)
 
     # Before FCR: check reconfirmation status
-    print(f"is_confirmed_chain_safe before FCR: {spec.is_confirmed_chain_safe(store, confirmed_before)}")
-    print(f"confirmed_before slot: {store.blocks[confirmed_before].slot}")
-    print(f"finalized slot: {store.blocks[finalized_root].slot}")
-    print(f"equivocating_indices: {len(store.equivocating_indices)}")
+    debug_print(
+        f"is_confirmed_chain_safe before FCR: {spec.is_confirmed_chain_safe(store, confirmed_before)}"
+    )
+    debug_print(f"confirmed_before slot: {store.blocks[confirmed_before].slot}")
+    debug_print(f"finalized slot: {store.blocks[finalized_root].slot}")
+    debug_print(f"equivocating_indices: {len(store.equivocating_indices)}")
 
     fcr.run_fast_confirmation()
 
@@ -79,14 +82,14 @@ def test_fcr_restarts_to_gu_when_all_conditions_met(spec, state):
     current_epoch = spec.get_current_store_epoch(store)
     finalized_root = store.finalized_checkpoint.root
 
-    print(f"\nAfter FCR:")
-    print(f"gu.epoch: {gu.epoch}, current_epoch: {current_epoch}")
-    print(f"confirmed_root slot: {store.blocks[store.confirmed_root].slot}")
-    print(f"gu.root slot: {store.blocks[gu.root].slot}")
-    print(f"finalized slot: {store.blocks[finalized_root].slot}")
-    print(f"confirmed == gu.root: {store.confirmed_root == gu.root}")
-    print(f"confirmed == finalized: {store.confirmed_root == finalized_root}")
-    print(f"confirmed == confirmed_before: {store.confirmed_root == confirmed_before}")
+    debug_print("\nAfter FCR:")
+    debug_print(f"gu.epoch: {gu.epoch}, current_epoch: {current_epoch}")
+    debug_print(f"confirmed_root slot: {store.blocks[store.confirmed_root].slot}")
+    debug_print(f"gu.root slot: {store.blocks[gu.root].slot}")
+    debug_print(f"finalized slot: {store.blocks[finalized_root].slot}")
+    debug_print(f"confirmed == gu.root: {store.confirmed_root == gu.root}")
+    debug_print(f"confirmed == finalized: {store.confirmed_root == finalized_root}")
+    debug_print(f"confirmed == confirmed_before: {store.confirmed_root == confirmed_before}")
 
     assert gu.epoch + 1 == current_epoch, (
         f"GU should be fresh after rotation: {gu.epoch} + 1 != {current_epoch}"
@@ -95,14 +98,11 @@ def test_fcr_restarts_to_gu_when_all_conditions_met(spec, state):
     assert store.confirmed_root != confirmed_before, (
         "Confirmed root should have changed (reconfirmation failed)"
     )
-    assert store.confirmed_root == gu.root, (
-        f"Should restart to GU root"
-    )
-    assert store.confirmed_root != finalized_root, (
-        "Should NOT stay at finalized"
-    )
+    assert store.confirmed_root == gu.root, "Should restart to GU root"
+    assert store.confirmed_root != finalized_root, "Should NOT stay at finalized"
 
     yield from fcr.get_test_artefacts()
+
 
 # test_reset_to_finality_but_no_restart_to_gu_because_gu_too_old_epoch can be considered
 # also for this test case scenario. See test_revert_finality.py

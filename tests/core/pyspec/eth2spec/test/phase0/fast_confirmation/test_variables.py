@@ -146,8 +146,7 @@ def test_observed_justified_checkpoints_update_timing(spec, state):
 
     # After last slot: GU snapshot is taken into previous_epoch_greatest_unrealized_checkpoint
     assert (
-        store.previous_epoch_greatest_unrealized_checkpoint
-        == store.unrealized_justified_checkpoint
+        store.previous_epoch_greatest_unrealized_checkpoint == store.unrealized_justified_checkpoint
     ), "previous_epoch_greatest_unrealized_checkpoint should snapshot unrealized at last slot"
 
     # But observed checkpoints should NOT have rotated yet
@@ -183,6 +182,7 @@ def test_observed_justified_checkpoints_update_timing(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -259,9 +259,9 @@ def test_observed_justified_checkpoints_properties_across_epochs(spec, state):
         assert spec.is_start_slot_at_epoch(spec.Slot(fcr.current_slot()))
 
         # Verify rotation happened correctly
-        assert store.previous_epoch_observed_justified_checkpoint == curr_observed_before_rotation, (
-            f"At epoch {epoch + 1} start: previous_observed != old current_observed"
-        )
+        assert (
+            store.previous_epoch_observed_justified_checkpoint == curr_observed_before_rotation
+        ), f"At epoch {epoch + 1} start: previous_observed != old current_observed"
         assert store.current_epoch_observed_justified_checkpoint == gu_snapshot, (
             f"At epoch {epoch + 1} start: current_observed != GU snapshot from last slot"
         )
@@ -464,6 +464,7 @@ def test_gu_snapshot_initialization_and_stability(spec, state):
 
     yield from fcr.get_test_artefacts()
 
+
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
 @with_custom_state(
@@ -474,16 +475,16 @@ def test_gu_snapshot_initialization_and_stability(spec, state):
 @single_phase
 def test_observed_justified_stable_during_last_slot(spec, state):
     """
-    At the last slot of an epoch, the observed justified checkpoints used by is_one_confirmed must still 
+    At the last slot of an epoch, the observed justified checkpoints used by is_one_confirmed must still
     reflect the old values, not the new ones.
 
     Concretely: run from epoch start through the entire epoch. Record the
     observed values at the second-to-last slot. Verify they are identical
     at the last slot.
 
-    It verifies that current_epoch_observed_justified_checkpoint and 
-    previous_epoch_observed_justified_checkpoint have the same value at the 
-    last slot of the epoch as they did at the first slot 
+    It verifies that current_epoch_observed_justified_checkpoint and
+    previous_epoch_observed_justified_checkpoint have the same value at the
+    last slot of the epoch as they did at the first slot
     """
     fcr = FCRTest(spec, seed=1)
     store = fcr.initialize(state)
@@ -518,8 +519,7 @@ def test_observed_justified_stable_during_last_slot(spec, state):
 
     # But the GU snapshot should have been taken
     assert (
-        store.previous_epoch_greatest_unrealized_checkpoint
-        == store.unrealized_justified_checkpoint
+        store.previous_epoch_greatest_unrealized_checkpoint == store.unrealized_justified_checkpoint
     ), "GU snapshot should be taken at last slot even though observed checkpoints don't rotate"
 
     yield from fcr.get_test_artefacts()

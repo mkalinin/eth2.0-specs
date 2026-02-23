@@ -16,6 +16,7 @@ from eth2spec.test.helpers.fast_confirmation import (
 Test is_one_confirmed
 """
 
+
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
 @with_custom_state(
@@ -74,11 +75,10 @@ def test_is_one_confirmed_passes_with_full_participation(spec, state):
     # Verify the integer inequality directly
     lhs = 2 * support + support_discount
     rhs = maximum_support + proposer_score + 2 * adversarial_weight
-    assert lhs > rhs, (
-        f"Inequality failed: lhs={lhs} vs rhs={rhs}"
-    )
+    assert lhs > rhs, f"Inequality failed: lhs={lhs} vs rhs={rhs}"
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -139,11 +139,10 @@ def test_is_one_confirmed_fails_with_low_participation(spec, state):
     # Verify the inequality does NOT hold
     lhs = 2 * support + support_discount
     rhs = maximum_support + proposer_score + 2 * adversarial_weight
-    assert lhs <= rhs, (
-        f"Inequality unexpectedly holds: lhs={lhs} > rhs={rhs} at 50% participation"
-    )
+    assert lhs <= rhs, f"Inequality unexpectedly holds: lhs={lhs} > rhs={rhs} at 50% participation"
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -196,6 +195,7 @@ def test_is_one_confirmed_slashing_supporters_does_not_hurt(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -255,11 +255,9 @@ def test_is_one_confirmed_slashing_non_supporters_helps(spec, state):
 
     # Identify non-supporters: validators whose latest message does not point to B
     non_supporters = [
-        i for i in range(len(state.validators))
-        if (
-            i not in store.latest_messages
-            or store.latest_messages[i].root != block_b
-        )
+        i
+        for i in range(len(state.validators))
+        if (i not in store.latest_messages or store.latest_messages[i].root != block_b)
         and not state.validators[i].slashed
         and i not in store.equivocating_indices
     ]
@@ -290,6 +288,7 @@ def test_is_one_confirmed_slashing_non_supporters_helps(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -325,7 +324,7 @@ def test_is_one_confirmed_empty_slot_discount(spec, state):
     # Build through epoch 1 to establish balance source
     fcr.run_slots_with_blocks_and_fast_confirmation(2 * S, participation_rate=100)
 
-    # Block A: consecutive slot (no empty slot gap) 
+    # Block A: consecutive slot (no empty slot gap)
     block_a = fcr.next_slot_with_block_and_fast_confirmation(participation_rate=100)
 
     block_a_data = store.blocks[block_a]
@@ -341,7 +340,7 @@ def test_is_one_confirmed_empty_slot_discount(spec, state):
         "Block A should pass is_one_confirmed (consecutive, 100%)"
     )
 
-    # Block B: after an empty slot gap 
+    # Block B: after an empty slot gap
     head_before_empty = fcr.head()
 
     # Empty slot: attest 100% to current head, advance, apply, run FCR — no block
@@ -366,14 +365,23 @@ def test_is_one_confirmed_empty_slot_discount(spec, state):
 
     # Verify the discount matches the formula:
     # discount = parent_support_in_empty_slots - adversarial_weight_in_empty_slots
-    parent_support_in_empty = int(spec.get_block_support_between_slots(
-        store, balance_source, block_b_data.parent_root,
-        spec.Slot(parent_b.slot + 1), spec.Slot(block_b_data.slot - 1),
-    ))
-    adv_in_empty = int(spec.compute_adversarial_weight(
-        store, balance_source,
-        spec.Slot(parent_b.slot + 1), spec.Slot(block_b_data.slot - 1),
-    ))
+    parent_support_in_empty = int(
+        spec.get_block_support_between_slots(
+            store,
+            balance_source,
+            block_b_data.parent_root,
+            spec.Slot(parent_b.slot + 1),
+            spec.Slot(block_b_data.slot - 1),
+        )
+    )
+    adv_in_empty = int(
+        spec.compute_adversarial_weight(
+            store,
+            balance_source,
+            spec.Slot(parent_b.slot + 1),
+            spec.Slot(block_b_data.slot - 1),
+        )
+    )
     assert discount_b == parent_support_in_empty - adv_in_empty, (
         f"Discount should equal parent_support - adv in empty slots: "
         f"discount={discount_b}, parent_support={parent_support_in_empty}, adv={adv_in_empty}"
@@ -382,9 +390,7 @@ def test_is_one_confirmed_empty_slot_discount(spec, state):
     # Accumulate support to show discount contributes to confirmation
     # At this point is_one_confirmed fails for block_b (one slot + empty slot gap).
     # Accumulate one more slot of attestations to dilute proposer boost.
-    fcr.attest_and_next_slot_with_fast_confirmation(
-        block_root=block_b, participation_rate=100
-    )
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=block_b, participation_rate=100)
 
     balance_source = spec.get_current_balance_source(store)
 
@@ -398,9 +404,11 @@ def test_is_one_confirmed_empty_slot_discount(spec, state):
     support_b = int(spec.get_attestation_score(store, block_b, balance_source))
     proposer_b = int(spec.compute_proposer_score(balance_source))
     total_active_balance = spec.get_total_active_balance(balance_source)
-    max_support_b = int(spec.estimate_committee_weight_between_slots(
-        total_active_balance, spec.Slot(parent_b.slot + 1), spec.Slot(current_slot - 1)
-    ))
+    max_support_b = int(
+        spec.estimate_committee_weight_between_slots(
+            total_active_balance, spec.Slot(parent_b.slot + 1), spec.Slot(current_slot - 1)
+        )
+    )
     adv_b = int(spec.get_adversarial_weight(store, balance_source, block_b))
     discount_b_now = int(spec.get_support_discount(store, balance_source, block_b))
 
@@ -413,6 +421,7 @@ def test_is_one_confirmed_empty_slot_discount(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -462,9 +471,7 @@ def test_is_one_confirmed_support_accumulates_over_slots(spec, state):
     )
 
     # Attest 85% to B at s+1, advance to s+2, apply, run FCR — no new block
-    fcr.attest_and_next_slot_with_fast_confirmation(
-        block_root=block_b, participation_rate=85
-    )
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=block_b, participation_rate=85)
 
     balance_source = spec.get_current_balance_source(store)
 
@@ -474,6 +481,7 @@ def test_is_one_confirmed_support_accumulates_over_slots(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -510,12 +518,9 @@ def test_is_one_confirmed_epoch_crossing_block(spec, state):
 
     # We're now at the last slot of epoch 1
     parent_root = fcr.head()
-    parent_epoch = spec.get_block_epoch(store, parent_root)
 
     # Skip the first slot of epoch 2 (empty slot at epoch boundary)
-    fcr.attest_and_next_slot_with_fast_confirmation(
-        block_root=parent_root, participation_rate=100
-    )
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=parent_root, participation_rate=100)
 
     # Propose block at second slot of epoch 2 — crosses epoch boundary
     block_b = fcr.next_slot_with_block_and_fast_confirmation(
@@ -539,14 +544,18 @@ def test_is_one_confirmed_epoch_crossing_block(spec, state):
     epoch_start = spec.compute_start_slot_at_epoch(block_epoch)
 
     # Adversarial weight with epoch start (what the code does for epoch-crossing)
-    adv_from_epoch_start = int(spec.compute_adversarial_weight(
-        store, balance_source, epoch_start, spec.Slot(current_slot - 1)
-    ))
+    adv_from_epoch_start = int(
+        spec.compute_adversarial_weight(
+            store, balance_source, epoch_start, spec.Slot(current_slot - 1)
+        )
+    )
 
     # Adversarial weight with block slot (what the code would do without epoch-crossing logic)
-    adv_from_block_slot = int(spec.compute_adversarial_weight(
-        store, balance_source, block.slot, spec.Slot(current_slot - 1)
-    ))
+    adv_from_block_slot = int(
+        spec.compute_adversarial_weight(
+            store, balance_source, block.slot, spec.Slot(current_slot - 1)
+        )
+    )
 
     # The actual adversarial weight used by is_one_confirmed
     adv_actual = int(spec.get_adversarial_weight(store, balance_source, block_b))
@@ -564,9 +573,7 @@ def test_is_one_confirmed_epoch_crossing_block(spec, state):
     )
 
     # Accumulate more support to get is_one_confirmed to pass
-    fcr.attest_and_next_slot_with_fast_confirmation(
-        block_root=block_b, participation_rate=100
-    )
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=block_b, participation_rate=100)
 
     balance_source = spec.get_current_balance_source(store)
 
@@ -575,6 +582,7 @@ def test_is_one_confirmed_epoch_crossing_block(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -647,9 +655,7 @@ def test_is_one_confirmed_fails_with_competing_branch(spec, state):
     )
 
     # Accumulate support for B1 only — first additional slot
-    fcr.attest_and_next_slot_with_fast_confirmation(
-        block_root=block_b1, participation_rate=100
-    )
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=block_b1, participation_rate=100)
 
     balance_source = spec.get_current_balance_source(store)
 
@@ -662,9 +668,7 @@ def test_is_one_confirmed_fails_with_competing_branch(spec, state):
     )
 
     # Accumulate support for B1 only — second additional slot
-    fcr.attest_and_next_slot_with_fast_confirmation(
-        block_root=block_b1, participation_rate=100
-    )
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=block_b1, participation_rate=100)
 
     balance_source = spec.get_current_balance_source(store)
 
@@ -679,6 +683,7 @@ def test_is_one_confirmed_fails_with_competing_branch(spec, state):
     )
 
     yield from fcr.get_test_artefacts()
+
 
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
@@ -700,7 +705,7 @@ def test_is_confirmed_chain_safe_passes_full_chain(spec, state):
 
     This test verifies:
     1. confirmed_root advances beyond genesis (FCR confirms blocks)
-    2. The confirmed chain has multiple blocks 
+    2. The confirmed chain has multiple blocks
     3. is_confirmed_chain_safe returns True for the confirmed root
     4. Every individual block in the chain passes is_one_confirmed
     """
@@ -740,12 +745,9 @@ def test_is_confirmed_chain_safe_passes_full_chain(spec, state):
         blocks_checked += 1
 
     # The chain should have multiple blocks (non-trivial walk)
-    assert blocks_checked > 1, (
-        f"Expected multi-block chain, only checked {blocks_checked} blocks"
-    )
+    assert blocks_checked > 1, f"Expected multi-block chain, only checked {blocks_checked} blocks"
 
     yield from fcr.get_test_artefacts()
-
 
 
 @with_altair_and_later
@@ -795,9 +797,7 @@ def test_is_one_confirmed_epoch_crossing_adversarial_range_matters(spec, state):
     parent_root = fcr.head()
 
     # Skip first slot of epoch 2 (empty) — attest to parent
-    fcr.attest_and_next_slot_with_fast_confirmation(
-        block_root=parent_root, participation_rate=100
-    )
+    fcr.attest_and_next_slot_with_fast_confirmation(block_root=parent_root, participation_rate=100)
 
     # Propose epoch-crossing block at slot 17 with parent at slot 15
     block_b = fcr.next_slot_with_block_and_fast_confirmation(
@@ -821,9 +821,7 @@ def test_is_one_confirmed_epoch_crossing_adversarial_range_matters(spec, state):
 
     # Accumulate support at 85% for 2 more slots
     for _ in range(2):
-        fcr.attest_and_next_slot_with_fast_confirmation(
-            block_root=block_b, participation_rate=85
-        )
+        fcr.attest_and_next_slot_with_fast_confirmation(block_root=block_b, participation_rate=85)
 
     balance_source = spec.get_current_balance_source(store)
     current_slot = spec.get_current_slot(store)
@@ -836,19 +834,25 @@ def test_is_one_confirmed_epoch_crossing_adversarial_range_matters(spec, state):
 
     # Verify the epoch-crossing logic is what prevents confirmation:
     # compute margins with correct vs wrong adversarial range
-    adv_correct = int(spec.compute_adversarial_weight(
-        store, balance_source, epoch_start, spec.Slot(current_slot - 1)
-    ))
-    adv_wrong = int(spec.compute_adversarial_weight(
-        store, balance_source, block.slot, spec.Slot(current_slot - 1)
-    ))
+    adv_correct = int(
+        spec.compute_adversarial_weight(
+            store, balance_source, epoch_start, spec.Slot(current_slot - 1)
+        )
+    )
+    adv_wrong = int(
+        spec.compute_adversarial_weight(
+            store, balance_source, block.slot, spec.Slot(current_slot - 1)
+        )
+    )
 
     support = int(spec.get_attestation_score(store, block_b, balance_source))
-    max_support = int(spec.estimate_committee_weight_between_slots(
-        total_active_balance,
-        spec.Slot(parent_block.slot + 1),
-        spec.Slot(current_slot - 1),
-    ))
+    max_support = int(
+        spec.estimate_committee_weight_between_slots(
+            total_active_balance,
+            spec.Slot(parent_block.slot + 1),
+            spec.Slot(current_slot - 1),
+        )
+    )
     proposer = int(spec.compute_proposer_score(balance_source))
     discount = int(spec.get_support_discount(store, balance_source, block_b))
 

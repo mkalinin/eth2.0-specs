@@ -718,9 +718,7 @@ def test_fcr_resets_when_bcand_not_descendant_of_gu_via_first_received_uj(spec, 
     # Check GU snapshot = (C, 2) — use the snapshot field, not current_observed
     # (rotation hasn't happened yet, it happens at epoch 4 start inside FCR)
     gu_snapshot = store.previous_epoch_greatest_unrealized_checkpoint
-    assert gu_snapshot.root == c_red, (
-        "GU snapshot should point to c_red"
-    )
+    assert gu_snapshot.root == c_red, "GU snapshot should point to c_red"
     assert gu_snapshot.epoch == spec.Epoch(2)
 
     # NOW release b' with epoch 3 attestations → justifies (d_root, 3)
@@ -754,9 +752,7 @@ def test_fcr_resets_when_bcand_not_descendant_of_gu_via_first_received_uj(spec, 
     confirmed_epoch = spec.get_block_epoch(store, confirmed_before_fcr)
 
     # bcand is NOT too old (epoch(bcand) + 1 >= current_epoch)
-    assert not (confirmed_epoch + 1 < current_epoch), (
-        "bcand should NOT be too old"
-    )
+    assert not (confirmed_epoch + 1 < current_epoch), "bcand should NOT be too old"
 
     # bcand IS on the canonical chain (bcand ≼ head)
     head_before_fcr = fcr.head()
@@ -767,7 +763,7 @@ def test_fcr_resets_when_bcand_not_descendant_of_gu_via_first_received_uj(spec, 
     # Run FCR — rotation happens, then reset check
     fcr.run_fast_confirmation()
 
-    # Verify GU after rotation      
+    # Verify GU after rotation
     gu = store.current_epoch_observed_justified_checkpoint
     assert gu.root == c_red, "GU should be c_red after rotation"
     assert gu.epoch == spec.Epoch(2)

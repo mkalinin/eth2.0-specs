@@ -155,6 +155,7 @@ def test_fcr_handles_multiple_consecutive_empty_slots(spec, state):
 
     yield from fcr.get_test_artefacts()
 
+
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
 @with_custom_state(
@@ -218,8 +219,7 @@ def test_fcr_empty_slot_at_epoch_boundary(spec, state):
 
     # GU snapshot should have been taken
     assert (
-        store.previous_epoch_greatest_unrealized_checkpoint
-        == store.unrealized_justified_checkpoint
+        store.previous_epoch_greatest_unrealized_checkpoint == store.unrealized_justified_checkpoint
     ), "GU snapshot should be taken at last slot of epoch even during empty slot"
 
     # Observed checkpoints should NOT have rotated (PR #25 fix)
@@ -295,6 +295,7 @@ def test_fcr_empty_slot_at_epoch_boundary(spec, state):
 
     yield from fcr.get_test_artefacts()
 
+
 @with_altair_and_later
 @with_presets([MINIMAL], reason="too slow")
 @with_custom_state(
@@ -356,8 +357,7 @@ def test_fcr_empty_slots_at_epoch_boundary_both_sides(spec, state):
 
     # GU snapshot should have been taken
     assert (
-        store.previous_epoch_greatest_unrealized_checkpoint
-        == store.unrealized_justified_checkpoint
+        store.previous_epoch_greatest_unrealized_checkpoint == store.unrealized_justified_checkpoint
     ), "GU snapshot should be taken at last slot of epoch"
 
     # Observed checkpoints should NOT have rotated (PR #25)
