@@ -912,14 +912,14 @@ Implementations MUST strictly follow the call sequence:
 1. `update_fast_confirmation_variables`
 2. `get_latest_confirmed`
 
-Implementations SHOULD call `update_fast_confirmation_variables` when either (a)
-a valid block from the expected block proposer for the assigned `slot` has been
-received and processed or (b) `get_attestation_due_ms(epoch)` milliseconds has
-transpired since the start of the slot -- whichever comes first.
+Implementations MUST call `update_fast_confirmation_variables` in the first part
+of a slot after attestations from past slots have been applied and before
+`get_attestation_due_ms(epoch)` milliseconds has transpired since the start of
+the slot.
 
-Implementations MUST NOT call `update_fast_confirmation_variables` later than
-`get_attestation_due_ms(epoch)` milliseconds into a slot. Otherwise, the
-synchrony assumption that the algorithm relies upon may not hold.
+Implementations MAY call `update_fast_confirmation_variables` when a valid block
+from the expected block proposer for the assigned `slot` has been received and
+processed.
 
 Implementations MAY call `get_latest_confirmed` at any point in time throughout
 a slot.
