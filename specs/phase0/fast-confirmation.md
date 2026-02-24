@@ -917,9 +917,10 @@ of a slot after attestations from past slots have been applied and before
 `get_attestation_due_ms(epoch)` milliseconds has transpired since the start of
 the slot.
 
-Implementations MAY call `update_fast_confirmation_variables` when a valid block
-from the expected block proposer for the assigned `slot` has been received and
-processed.
+Implementations MAY call `update_fast_confirmation_variables` after a valid
+block from the expected block proposer for the assigned `slot` has been received
+and processed if this happens before `get_attestation_due_ms(epoch)`
+milliseconds has transpired since the start of the `slot`.
 
 Implementations MAY call `get_latest_confirmed` at any point in time throughout
 a slot.
