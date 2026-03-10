@@ -503,6 +503,7 @@ def compute_safety_threshold(store: Store, block_root: Root, balance_source: Bea
     support_discount = get_support_discount(store, balance_source, block_root)
     adversarial_weight = get_adversarial_weight(store, balance_source, block_root)
 
+    # The subtraction is safe as maximum_support is always greater than support_discount
     return (maximum_support + proposer_score - support_discount) // 2 + adversarial_weight
 ```
 
