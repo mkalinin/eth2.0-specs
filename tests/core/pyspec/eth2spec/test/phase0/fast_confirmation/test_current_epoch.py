@@ -95,23 +95,8 @@ class CurrentEpochTestBuilder:
         if self.test_spec.second_slot_call:
             # Nothing to do here
             pass
-        elif (
-            self.test_spec.first_block_in_epoch
-            and self.test_spec.one_confirmed_but_no_justification()
-        ):
-            # Slash a fraction of validators each slot
-            # and leave yet enough unslashed to make is_one_confirmed to pass
-            # but will_current_target_be_justified to fail
-            runs.append(
-                SlotRun(
-                    slashing=Slashing(
-                        percentage=45,
-                        committee_slot_or_offset=0,
-                    )
-                )
-            )
         elif self.test_spec.first_block_in_epoch:
-            # Move on to the seconds slot in an epoch
+            # Move on to the second slot in an epoch
             # with participation low enough to prevent confirming a block
             # but still enough to confirm it a slot after if needed
             runs.append(SlotRun(attesting=Attesting(participation_rate=85)))
@@ -119,16 +104,6 @@ class CurrentEpochTestBuilder:
             # Move on to the seconds slot in an epoch
             # and confirm a block
             runs.append(SlotRun())
-
-            if self.test_spec.one_confirmed_but_no_justification():
-                # Slash entire committee that has already confirmed a block,
-                # this will result in will_current_target_be_justified to fail
-                runs.append(
-                    Slashing(
-                        percentage=100,
-                        committee_slot_or_offset=-1,
-                    )
-                )
 
         return runs
 
@@ -149,19 +124,6 @@ class CurrentEpochTestBuilder:
         if self.test_spec.second_slot_call:
             # Nothing to do here
             pass
-        elif (
-            self.test_spec.first_block_in_epoch
-            and self.test_spec.one_confirmed_but_no_justification()
-        ):
-            # Slash a fraction of validators each slot
-            # and leave yet enough unslashed to make is_one_confirmed to pass
-            # but will_current_target_be_justified to fail
-            runs.append(
-                SlotRun(
-                    proposal=Proposal(atts_in_block=False),
-                    slashing=Slashing(percentage=45, committee_slot_or_offset=0),
-                )
-            )
         elif self.test_spec.first_block_in_epoch:
             # Move on to the seconds slot in an epoch
             # without including atts in a block to prevent UJ update
@@ -176,11 +138,10 @@ class CurrentEpochTestBuilder:
             # Create the following block tree:
             #   B
             #  /
-            # A -- C, where:
+            # A -- H, where:
             #
             # UJ[B].epoch == current_epoch - 1
             # UJ[C].epoch == current_epoch - 2
-            # C == head
             #
             # Create A and attest to A
             runs.append(SlotRun(proposal=Proposal(atts_in_block=False)))
@@ -192,18 +153,8 @@ class CurrentEpochTestBuilder:
                     attesting=Attesting(block_slot_or_offset=-1),
                 )
             )
-            # Create C and attest to C, so C becomes the head, confirm A
+            # Create H and attest to it, so H becomes the head, confirm A
             runs.append(SlotRun(proposal=Proposal(parent_root_slot_or_offset=-2)))
-
-            if self.test_spec.one_confirmed_but_no_justification():
-                # Slash entire committee that has confirmed block A,
-                # this will result in will_current_target_be_justified to fail
-                runs.append(
-                    Slashing(
-                        percentage=100,
-                        committee_slot_or_offset=-3,
-                    )
-                )
 
         return runs
 
@@ -259,8 +210,7 @@ class CurrentEpochTestBuilder:
     def create_system_runs(self) -> list[PhaseRun]:
         if self.test_spec.second_slot_call:
             assert self.test_spec.first_block_in_epoch, "Impossible in the second slot of an epoch"
-        if self.test_spec.one_confirmed_but_no_justification():
-            assert not self.test_spec.first_block_in_second_slot(), "The test is hard to build"
+        assert not self.test_spec.one_confirmed_but_no_justification(), "Impossible if beta = 25%"
 
         # Initial run to the second epoch
         runs = [SlotSequence(number_of_slots=self.spec.SLOTS_PER_EPOCH)]
@@ -552,59 +502,3 @@ def test_fcr_current_epoch_17(spec, state):
         is_one_confirmed=False,
     )
     yield from build_and_run_current_epoch_test(spec, state, 17, test_spec)
-
-
-@with_altair_and_later
-@spec_state_test
-@with_presets([MINIMAL], reason="too slow")
-def test_fcr_current_epoch_18(spec, state):
-    test_spec = CurrentEpochTestSpecification(
-        head_uj_fresh=True,
-        second_slot_call=False,
-        first_block_in_epoch=False,
-        target_will_be_justified=False,
-        is_one_confirmed=True,
-    )
-    yield from build_and_run_current_epoch_test(spec, state, 18, test_spec)
-
-
-@with_altair_and_later
-@spec_state_test
-@with_presets([MINIMAL], reason="too slow")
-def test_fcr_current_epoch_19(spec, state):
-    test_spec = CurrentEpochTestSpecification(
-        head_uj_fresh=False,
-        second_slot_call=False,
-        first_block_in_epoch=False,
-        target_will_be_justified=False,
-        is_one_confirmed=True,
-    )
-    yield from build_and_run_current_epoch_test(spec, state, 19, test_spec)
-
-
-@with_altair_and_later
-@spec_state_test
-@with_presets([MINIMAL], reason="too slow")
-def test_fcr_current_epoch_20(spec, state):
-    test_spec = CurrentEpochTestSpecification(
-        head_uj_fresh=True,
-        second_slot_call=False,
-        first_block_in_epoch=True,
-        target_will_be_justified=False,
-        is_one_confirmed=True,
-    )
-    yield from build_and_run_current_epoch_test(spec, state, 20, test_spec)
-
-
-@with_altair_and_later
-@spec_state_test
-@with_presets([MINIMAL], reason="too slow")
-def test_fcr_current_epoch_21(spec, state):
-    test_spec = CurrentEpochTestSpecification(
-        head_uj_fresh=False,
-        second_slot_call=False,
-        first_block_in_epoch=True,
-        target_will_be_justified=False,
-        is_one_confirmed=True,
-    )
-    yield from build_and_run_current_epoch_test(spec, state, 21, test_spec)
