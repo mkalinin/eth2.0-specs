@@ -19,17 +19,17 @@ This section describes an algorithm to find a safe block.
 ## `get_safe_beacon_block_root`
 
 ```python
-def get_safe_beacon_block_root(store: Store) -> Root:
+def get_safe_beacon_block_root(fcr_store: FastConfirmationStore) -> Root:
     # Use the most recent confirmed_root determined by the FCR algorithm
-    return store.confirmed_root
+    return fcr_store.confirmed_root
 ```
 
 ## `get_safe_execution_block_hash`
 
 ```python
-def get_safe_execution_block_hash(store: Store) -> Hash32:
-    safe_block_root = get_safe_beacon_block_root(store)
-    safe_block = store.blocks[safe_block_root]
+def get_safe_execution_block_hash(fcr_store: FastConfirmationStore) -> Hash32:
+    safe_block_root = get_safe_beacon_block_root(fcr_store)
+    safe_block = fcr_store.store.blocks[safe_block_root]
 
     # Return Hash32() if no payload is yet justified
     if compute_epoch_at_slot(safe_block.slot) >= BELLATRIX_FORK_EPOCH:
