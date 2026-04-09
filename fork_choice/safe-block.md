@@ -3,6 +3,7 @@
 <!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
 
 - [Introduction](#introduction)
+- [`get_fast_confirmation_store`](#get_fast_confirmation_store)
 - [`get_optimistic_store`](#get_optimistic_store)
 - [`get_safe_beacon_block_root`](#get_safe_beacon_block_root)
 - [`get_safe_execution_block_hash`](#get_safe_execution_block_hash)
@@ -16,6 +17,16 @@ a block that is safe from re-orgs. Normally this block is pretty close to the
 head of canonical chain which makes it valuable to expose a safe block to users.
 
 This section describes an algorithm to find a safe block.
+
+## `get_fast_confirmation_store`
+
+*Note*: Abstract function that returns an instance of `FastConfirmationStore`
+defined in [Fast Confirmation](../specs/phase0/fast-confirmation.md).
+
+```python
+def get_fast_confirmation_store() -> FastConfirmationStore:
+    pass
+```
 
 ## `get_optimistic_store`
 
@@ -62,13 +73,15 @@ Implementations **MAY** satisfy the above requirements by returning from
 
 ```python
 def get_safe_beacon_block_root(store: Store) -> Root:
+    confirmed_root = get_fast_confirmation_store().confirmed_root
+
     # Return finalized root if confirmed block is not canonical anymore
-    if not is_ancestor(store, get_head(store), store.confirmed_root):
+    if not is_ancestor(store, get_head(store), confirmed_root):
         return store.finalized_checkpoint.root
 
     # Return confirmed root or its most recent verified ancestor
     valid_confirmed_ancestor = latest_verified_ancestor(
-        get_optimistic_store(), store.blocks[store.confirmed_root]
+        get_optimistic_store(), store.blocks[confirmed_root]
     )
     return valid_confirmed_ancestor.root
 ```
