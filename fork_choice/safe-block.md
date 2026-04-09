@@ -3,6 +3,7 @@
 <!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
 
 - [Introduction](#introduction)
+- [`get_fast_confirmation_store`](#get_fast_confirmation_store)
 - [`get_safe_beacon_block_root`](#get_safe_beacon_block_root)
 - [`get_safe_execution_block_hash`](#get_safe_execution_block_hash)
 
@@ -16,20 +17,30 @@ head of canonical chain which makes it valuable to expose a safe block to users.
 
 This section describes an algorithm to find a safe block.
 
+## `get_fast_confirmation_store`
+
+*Note*: Abstract function that returns an instance of `FastConfirmationStore`
+defined in [Fast Confirmation](../specs/phase0/fast-confirmation.md).
+
+```python
+def get_fast_confirmation_store() -> FastConfirmationStore:
+    pass
+```
+
 ## `get_safe_beacon_block_root`
 
 ```python
-def get_safe_beacon_block_root(fcr_store: FastConfirmationStore) -> Root:
+def get_safe_beacon_block_root(store: Store) -> Root:
     # Use the most recent confirmed_root determined by the FCR algorithm
-    return fcr_store.confirmed_root
+    return get_fast_confirmation_store().confirmed_root
 ```
 
 ## `get_safe_execution_block_hash`
 
 ```python
-def get_safe_execution_block_hash(fcr_store: FastConfirmationStore) -> Hash32:
-    safe_block_root = get_safe_beacon_block_root(fcr_store)
-    safe_block = fcr_store.store.blocks[safe_block_root]
+def get_safe_execution_block_hash(store: Store) -> Hash32:
+    safe_block_root = get_safe_beacon_block_root(store)
+    safe_block = store.blocks[safe_block_root]
 
     # Return Hash32() if no payload is yet justified
     if compute_epoch_at_slot(safe_block.slot) >= BELLATRIX_FORK_EPOCH:

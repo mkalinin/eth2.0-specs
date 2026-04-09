@@ -86,7 +86,7 @@ blocks can be reorged without any adversarial behavior and without slashing.
 The `FastConfirmationStore` is responsible for tracking information required for
 the fast confirmation rule . The fields being tracked are described below:
 
-- `store`: fork choice `Store` instance, added for convenience.
+- `store`: read-only instance of the fork choice `Store`, added for convenience.
 - `confirmed_root`: root of the most recent confirmed block.
 - `previous_epoch_observed_justified_checkpoint`: a justified checkpoint that
   has been observed by all honest nodes at the beginning of the previous epoch
@@ -118,10 +118,9 @@ Initialization of the fast confirmation store should happen at the same time as
 initialization of the fork choice store and use the same trusted checkpoint.
 
 *Note*: This function conservatively uses `store.finalized_checkpoint` for all
-fast confirmation variables. Auxiliary variables will be updated at no later
-than the next epoch boundary which allows for a start with a fresher confirmed
-block if conditions are met, before that finalized block will be returned as the
-confirmed one.
+fast confirmation variables. Confirmed block will be advanced at any future
+epoch boundary when the starting conditions are met, before that the finalized
+block will be returned as the confirmed one.
 
 ```python
 def get_fast_confirmation_store(store: Store) -> FastConfirmationStore:
