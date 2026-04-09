@@ -618,6 +618,9 @@ the block would also have to pass this check.
 More details on this check can be found in the
 [paper](https://arxiv.org/abs/2405.00549).
 
+This function **MUST** return `False` if `block_root` is `NOT_VALIDATED`
+according to the [Optimistic sync](../../sync/optimistic.md) specification.
+
 ```python
 def is_one_confirmed(store: Store, balance_source: BeaconState, block_root: Root) -> bool:
     """
