@@ -618,7 +618,7 @@ the block would also have to pass this check.
 More details on this check can be found in the
 [paper](https://arxiv.org/abs/2405.00549).
 
-This function **MUST** return `False` if `block_root` is `NOT_VALIDATED`
+This function **MUST** return `False` if `block_root` status is **not** `VALID`
 according to the [Optimistic sync](../../sync/optimistic.md) specification.
 
 ```python
