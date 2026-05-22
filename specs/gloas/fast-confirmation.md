@@ -4,7 +4,7 @@
 
 - [Introduction](#introduction)
 - [Helpers](#helpers)
-  - [Modified `get_block_root_node`](#modified-get_block_root_node)
+  - [Modified `get_node_for_root`](#modified-get_node_for_root)
 
 <!-- mdformat-toc end -->
 
@@ -15,14 +15,13 @@ accompanying Gloas.
 
 ## Helpers
 
-### Modified `get_block_root_node`
+### Modified `get_node_for_root`
 
 *Note:* This function is modified to return an extended `ForkChoiceNode`
-structure with `PAYLOAD_STATUS_PENDING` payload status as a common ancestor of
-all nodes referring to a given `block_root`.
+structure with `PAYLOAD_STATUS_PENDING` payload status.
 
 ```python
-def get_block_root_node(block_root: Root) -> ForkChoiceNode:
+def get_node_for_root(block_root: Root) -> ForkChoiceNode:
     # [Modified in Gloas:EIP7732]
     return ForkChoiceNode(root=block_root, payload_status=PAYLOAD_STATUS_PENDING)
 ```
