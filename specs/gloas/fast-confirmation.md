@@ -19,7 +19,7 @@ accompanying Gloas.
 
 ### Modified `get_node_for_root`
 
-*Note:* This function is modified to return an extended `ForkChoiceNode`
+*Note*: This function is modified to return an extended `ForkChoiceNode`
 structure with `PAYLOAD_STATUS_PENDING` payload status.
 
 ```python
