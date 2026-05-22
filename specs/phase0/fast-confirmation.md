@@ -10,6 +10,7 @@
     - [`FastConfirmationStore`](#fastconfirmationstore)
     - [`get_fast_confirmation_store`](#get_fast_confirmation_store)
     - [Misc helper functions](#misc-helper-functions)
+    - [`get_block_root_node`](#get_block_root_node)
       - [`get_block_slot`](#get_block_slot)
       - [`get_block_epoch`](#get_block_epoch)
       - [`get_checkpoint_for_block`](#get_checkpoint_for_block)
@@ -135,6 +136,21 @@ def get_fast_confirmation_store(store: Store) -> FastConfirmationStore:
 ```
 
 #### Misc helper functions
+
+#### `get_block_root_node`
+
+*Note:* The semantics of this function is to construct a `ForkChoiceNode` that
+is a common ancestor for all fork choice nodes referring to the same beacon
+block. Future protocol versions may introduce new types of nodes, but this
+function assumes that the common ancestor node type will always exist. This
+function is introduced for future compatibility, it allows fast confirmation
+rule code that operates over beacon blocks to be agnostic to the protocol
+version.
+
+```python
+def get_block_root_node(block_root: Root) -> ForkChoiceNode:
+    return ForkChoiceNode(root=block_root)
+```
 
 ##### `get_block_slot`
 
