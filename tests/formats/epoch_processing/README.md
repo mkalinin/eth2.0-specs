@@ -67,6 +67,8 @@ Sub-transitions:
 - `effective_balance_updates` (>=Electra)
 - `pending_consolidations` (>=Electra)
 - `pending_deposits` (>=Electra)
+- `builder_pending_payments` (>=Gloas)
+- `ptc_window` (>=Gloas)
 
 The resulting state should match the expected `post` state.
 
