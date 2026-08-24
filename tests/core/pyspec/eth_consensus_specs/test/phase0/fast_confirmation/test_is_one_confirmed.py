@@ -68,9 +68,8 @@ def test_is_one_confirmed_passes_with_full_participation(spec, state):
     node_b = spec.get_node_for_root(block_b)
     support = spec.get_attestation_score(store, node_b, balance_source)
     proposer_score = spec.compute_proposer_score(balance_source)
-    total_active_balance = spec.get_total_active_balance(balance_source)
-    maximum_support = spec.estimate_committee_weight_between_slots(
-        total_active_balance, spec.Slot(parent_block.slot + 1), spec.Slot(current_slot - 1)
+    maximum_support = spec.compute_committee_weight_between_slots(
+        store, balance_source, spec.Slot(parent_block.slot + 1), spec.Slot(current_slot - 1)
     )
     support_discount = spec.get_support_discount(store, balance_source, block_b)
     adversarial_weight = spec.get_adversarial_weight(store, balance_source, block_b)
@@ -134,9 +133,8 @@ def test_is_one_confirmed_fails_with_low_participation(spec, state):
     node_b = spec.get_node_for_root(block_b)
     support = spec.get_attestation_score(store, node_b, balance_source)
     proposer_score = spec.compute_proposer_score(balance_source)
-    total_active_balance = spec.get_total_active_balance(balance_source)
-    maximum_support = spec.estimate_committee_weight_between_slots(
-        total_active_balance, spec.Slot(parent_block.slot + 1), spec.Slot(current_slot - 1)
+    maximum_support = spec.compute_committee_weight_between_slots(
+        store, balance_source, spec.Slot(parent_block.slot + 1), spec.Slot(current_slot - 1)
     )
     support_discount = spec.get_support_discount(store, balance_source, block_b)
     adversarial_weight = spec.get_adversarial_weight(store, balance_source, block_b)
@@ -399,10 +397,9 @@ def test_is_one_confirmed_empty_slot_discount(spec, state):
     node_b = spec.get_node_for_root(block_b)
     support_b = int(spec.get_attestation_score(store, node_b, balance_source))
     proposer_b = int(spec.compute_proposer_score(balance_source))
-    total_active_balance = spec.get_total_active_balance(balance_source)
     max_support_b = int(
-        spec.estimate_committee_weight_between_slots(
-            total_active_balance, spec.Slot(parent_b.slot + 1), spec.Slot(current_slot - 1)
+        spec.compute_committee_weight_between_slots(
+            store, balance_source, spec.Slot(parent_b.slot + 1), spec.Slot(current_slot - 1)
         )
     )
     adv_b = int(spec.get_adversarial_weight(store, balance_source, block_b))
@@ -807,7 +804,6 @@ def test_is_one_confirmed_epoch_crossing_adversarial_range_matters(spec, state):
 
     balance_source = spec.get_current_balance_source(fcr_store)
     current_slot = spec.get_current_slot(store)
-    total_active_balance = spec.get_total_active_balance(balance_source)
 
     # Block should NOT be confirmed (correct adversarial range)
     assert not spec.is_one_confirmed(store, balance_source, block_b), (
@@ -830,8 +826,9 @@ def test_is_one_confirmed_epoch_crossing_adversarial_range_matters(spec, state):
     node_b = spec.get_node_for_root(block_b)
     support = int(spec.get_attestation_score(store, node_b, balance_source))
     max_support = int(
-        spec.estimate_committee_weight_between_slots(
-            total_active_balance,
+        spec.compute_committee_weight_between_slots(
+            store,
+            balance_source,
             spec.Slot(parent_block.slot + 1),
             spec.Slot(current_slot - 1),
         )
