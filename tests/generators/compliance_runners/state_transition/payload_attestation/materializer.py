@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import shutil
-from typing import TYPE_CHECKING, Any
+from typing import Any, TYPE_CHECKING
 
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
 from eth_consensus_specs.test.helpers.payload_attestation import prepare_signed_payload_attestation
 from eth_consensus_specs.test.utils.dumper import Dumper
-
-from ...gen_base.gen_typing import TestCase, TestCasePart, TestCaseResult
-from ...gen_base.output import dump_test_case_result
+from tests.generators.compliance_runners.gen_base.gen_typing import (
+    TestCase,
+    TestCasePart,
+    TestCaseResult,
+)
+from tests.generators.compliance_runners.gen_base.output import dump_test_case_result
 
 if TYPE_CHECKING:
     from pathlib import Path

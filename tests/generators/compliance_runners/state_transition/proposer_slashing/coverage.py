@@ -7,9 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from eth_consensus_specs.gloas import minimal as spec
-from ..aspect_coverage import cover, dedup, enumerate_signatures
-
-from .materializer import _DIMS, ProposerSlashingMaterializer
+from tests.generators.compliance_runners.state_transition.aspect_coverage import (
+    cover,
+    dedup,
+    enumerate_signatures,
+)
+from tests.generators.compliance_runners.state_transition.proposer_slashing.materializer import (
+    _DIMS,
+    ProposerSlashingMaterializer,
+)
 
 INPUT_ASPECTS = {
     "headers": ["slots_match", "proposers_match", "headers_different"],

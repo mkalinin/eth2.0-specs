@@ -7,9 +7,15 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from eth_consensus_specs.gloas import minimal as spec
-
-from ..aspect_coverage import cover, dedup, enumerate_signatures
-from .materializer import AttestationMaterializer, _DIMS
+from tests.generators.compliance_runners.state_transition.aspect_coverage import (
+    cover,
+    dedup,
+    enumerate_signatures,
+)
+from tests.generators.compliance_runners.state_transition.attestation.materializer import (
+    _DIMS,
+    AttestationMaterializer,
+)
 
 INPUT_ASPECTS = {
     "data": [

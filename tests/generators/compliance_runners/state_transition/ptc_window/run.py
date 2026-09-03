@@ -1,5 +1,9 @@
-from .coverage import materialize_profile
-from .validation import main as validate
+from tests.generators.compliance_runners.state_transition.ptc_window.coverage import (
+    materialize_profile,
+)
+from tests.generators.compliance_runners.state_transition.ptc_window.validation import (
+    main as validate,
+)
 
 
 def main():

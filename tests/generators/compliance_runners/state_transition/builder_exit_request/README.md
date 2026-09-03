@@ -8,18 +8,19 @@ aspects in [`../aspects/`](../aspects) and the shared coverage engine
 
 ## Aspects
 
-| aspect | dims | source |
-|---|---|---|
-| `builder_membership` | `builder_pubkey_found` | shared (`../aspects/`) |
-| `builder_lifecycle` | `deposit_to_finalized_epoch`, `withdrawable_epoch_set` | **shared with execution_payload_bid** (`is_active_builder`) |
-| `builder_pending_balance` | `has_pending_withdrawal`, `has_pending_payment` | **shared with execution_payload_bid** (`get_pending_balance_to_withdraw_for_builder`) |
-| `source_authorization` | `source_address_matches` | shared (`../aspects/`) |
-| `outcome` | `outcome` | handler outcome |
+| aspect                    | dims                                                   | source                                                                                |
+| ------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------- |
+| `builder_membership`      | `builder_pubkey_found`                                 | shared (`../aspects/`)                                                                |
+| `builder_lifecycle`       | `deposit_to_finalized_epoch`, `withdrawable_epoch_set` | **shared with execution_payload_bid** (`is_active_builder`)                           |
+| `builder_pending_balance` | `has_pending_withdrawal`, `has_pending_payment`        | **shared with execution_payload_bid** (`get_pending_balance_to_withdraw_for_builder`) |
+| `source_authorization`    | `source_address_matches`                               | shared (`../aspects/`)                                                                |
+| `outcome`                 | `outcome`                                              | handler outcome                                                                       |
 
 `builder_lifecycle.mzn` and `builder_pending_balance.mzn` are the *same files*
-the bid handler includes — each handler only binds their applicability to its own
-membership notion (bid: `builder_ref == EXISTING`; exit: `builder_pubkey_found`).
-Improving one aspect (or its recovery procedure) benefits both handlers.
+the bid handler includes — each handler only binds their applicability to its
+own membership notion (bid: `builder_ref == EXISTING`; exit:
+`builder_pubkey_found`). Improving one aspect (or its recovery procedure)
+benefits both handlers.
 
 ## Outcomes
 
@@ -29,12 +30,12 @@ operation never raises — a rejection is a no-op, so `post` is always present.
 
 ## Coverage profiles (`coverage.py`)
 
-| profile | cases |
-|---|---|
-| `onewise` | 10 |
-| `normal` (2-wise inputs, `EXIT_INITIATED`) | 1 |
-| `exceptional` (1-wise outcome, rejections) | 4 |
-| `standard` (`normal ∪ exceptional`) | 5 |
+| profile                                    | cases |
+| ------------------------------------------ | ----- |
+| `onewise`                                  | 10    |
+| `normal` (2-wise inputs, `EXIT_INITIATED`) | 1     |
+| `exceptional` (1-wise outcome, rejections) | 4     |
+| `standard` (`normal ∪ exceptional`)        | 5     |
 
 ## Usage
 

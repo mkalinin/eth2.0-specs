@@ -5,6 +5,7 @@ BuilderDepositRequest via the real spec predicates, recomputes the outcome, and
 runs the handler as an oracle (post is always present; it must equal spec
 re-execution). Imports neither the materializer nor the model.
 """
+
 from __future__ import annotations
 
 import sys
@@ -41,7 +42,9 @@ def recover(pre: Any, request: Any) -> dict[str, Any]:
     pubkeys = [b.pubkey for b in pre.builders]
     found = request.pubkey in pubkeys
     r: dict[str, Any] = {
-        "wc_is_builder_prefix": bool(spec.is_builder_withdrawal_credential(request.withdrawal_credentials)),
+        "wc_is_builder_prefix": bool(
+            spec.is_builder_withdrawal_credential(request.withdrawal_credentials)
+        ),
         "builder_pubkey_found": found,
         "builder_signature_valid": _tri(bool(spec.is_valid_builder_deposit_signature(request))),
         "amount_nonzero": int(request.amount) > 0,
@@ -62,7 +65,9 @@ def recover(pre: Any, request: Any) -> dict[str, Any]:
     if not r["wc_is_builder_prefix"]:
         outcome = "IGNORED_BAD_PREFIX"
     elif not found:
-        outcome = "ADDED_NEW_BUILDER" if r["builder_signature_valid"] == "T" else "IGNORED_BAD_SIGNATURE"
+        outcome = (
+            "ADDED_NEW_BUILDER" if r["builder_signature_valid"] == "T" else "IGNORED_BAD_SIGNATURE"
+        )
     else:
         outcome = "TOPPED_UP_AFTER_RESET" if r["reset_applies"] else "TOPPED_UP"
     r["outcome"] = outcome
@@ -77,8 +82,10 @@ def validate_case(case_dir: Path) -> tuple[list[Check], list[str]]:
     claimed = _YAML.load((case_dir / "dimensions.yaml").read_text())["claimed"]
     actual = recover(pre, request)
 
-    checks = [Check(d, c, actual.get(d, "<none>"), "ok" if actual.get(d, "<none>") == c else "mismatch")
-              for d, c in claimed.items()]
+    checks = [
+        Check(d, c, actual.get(d, "<none>"), "ok" if actual.get(d, "<none>") == c else "mismatch")
+        for d, c in claimed.items()
+    ]
 
     # Oracle: post must equal spec re-execution. (Note: `builder_credited` means
     # the credit branch was reached, not that state changed — a zero-amount

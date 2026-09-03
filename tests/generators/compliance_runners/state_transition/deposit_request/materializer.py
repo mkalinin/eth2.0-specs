@@ -6,18 +6,24 @@ copied verbatim, so validation's substantive check is output correctness.
 
 Spec: specs/electra/beacon-chain.md process_deposit_request (inherited by gloas).
 """
+
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from eth_consensus_specs.test.utils.dumper import Dumper
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
 from eth_consensus_specs.test.helpers.keys import pubkeys
+from eth_consensus_specs.test.utils.dumper import Dumper
+from tests.generators.compliance_runners.gen_base.gen_typing import (
+    TestCase,
+    TestCasePart,
+    TestCaseResult,
+)
+from tests.generators.compliance_runners.gen_base.output import dump_test_case_result
 
-from ...gen_base.gen_typing import TestCase, TestCaseResult, TestCasePart
-from ...gen_base.output import dump_test_case_result
+if TYPE_CHECKING:
+    from pathlib import Path
 
 NUM_VALIDATORS = 64
 REQUEST_INDEX = 5
@@ -45,10 +51,15 @@ class DepositRequestMaterializer:
     def materialize_solution(self, sol: Any) -> tuple[Any, Any, Any, dict]:
         spec = self.spec
         pre = create_genesis_state(
-            spec, validator_balances=[spec.MAX_EFFECTIVE_BALANCE] * NUM_VALIDATORS,
+            spec,
+            validator_balances=[spec.MAX_EFFECTIVE_BALANCE] * NUM_VALIDATORS,
             activation_threshold=spec.MAX_EFFECTIVE_BALANCE,
         )
-        pubkey = pre.validators[0].pubkey if _b(sol, "pubkey_is_existing_validator") else pubkeys[NUM_VALIDATORS]
+        pubkey = (
+            pre.validators[0].pubkey
+            if _b(sol, "pubkey_is_existing_validator")
+            else pubkeys[NUM_VALIDATORS]
+        )
         amount = spec.MIN_ACTIVATION_BALANCE if _b(sol, "amount_nonzero") else 0
         request = spec.DepositRequest(
             pubkey=spec.BLSPubkey(pubkey),
@@ -60,25 +71,32 @@ class DepositRequestMaterializer:
         post = pre.copy()
         spec.process_deposit_request(post, request)  # never raises
 
-        claimed = {n: (_b(sol, n) if isinstance(getattr(sol, n), bool) else _s(sol, n)) for n in _DIMS}
+        claimed = {
+            n: (_b(sol, n) if isinstance(getattr(sol, n), bool) else _s(sol, n)) for n in _DIMS
+        }
         return pre, request, post, claimed
 
     def write_case(self, dumper: Dumper, output_dir: Path, index: int, sol: Any) -> None:
         pre, request, post, claimed = self.materialize_solution(sol)
         case_name = f"case_{index:04d}"
         test_case = TestCase(
-            fork_name=self.fork_name, preset_name=self.preset_name,
-            runner_name="operations", handler_name="deposit_request",
-            suite_name="main", case_name=case_name,
+            fork_name=self.fork_name,
+            preset_name=self.preset_name,
+            runner_name="operations",
+            handler_name="deposit_request",
+            suite_name="main",
+            case_name=case_name,
         )
         test_case.set_output_dir(str(output_dir))
         case_parts: list[TestCasePart] = [
-            ("pre", "ssz", pre.encode_bytes()),  # type: ignore
-            ("deposit_request", "ssz", request.encode_bytes()),  # type: ignore
-            ("post", "ssz", post.encode_bytes()),  # type: ignore
+            ("pre", "ssz", pre.encode_bytes()),
+            ("deposit_request", "ssz", request.encode_bytes()),
+            ("post", "ssz", post.encode_bytes()),
         ]
         meta = {"description": f"process_deposit_request: {claimed['outcome']}"}
-        dump_test_case_result(TestCaseResult(test_case=test_case, meta=meta, case_parts=case_parts), dumper)
+        dump_test_case_result(
+            TestCaseResult(test_case=test_case, meta=meta, case_parts=case_parts), dumper
+        )
         dumper.dump_data(test_case.dir, "dimensions", {"case": case_name, "claimed": claimed})
 
     def materialize_reps(self, output_dir: Path, reps: list) -> int:

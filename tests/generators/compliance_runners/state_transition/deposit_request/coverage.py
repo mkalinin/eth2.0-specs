@@ -8,14 +8,22 @@ Run:
     uv run python -m ...deposit_request.coverage
     uv run python -m ...deposit_request.coverage standard --materialize
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from ..aspect_coverage import cover, enumerate_signatures
-from .materializer import DepositRequestMaterializer, _DIMS
+from eth_consensus_specs.gloas import minimal as spec
+from tests.generators.compliance_runners.state_transition.aspect_coverage import (
+    cover,
+    enumerate_signatures,
+)
+from tests.generators.compliance_runners.state_transition.deposit_request.materializer import (
+    _DIMS,
+    DepositRequestMaterializer,
+)
 
 INPUT_ASPECTS = {
     "deposit_amount": ["amount_nonzero"],
@@ -47,7 +55,6 @@ def _recs():
 
 
 def materialize_profile(name: str) -> int:
-    from eth_consensus_specs.gloas import minimal as spec
     _, chosen = build_profile(_recs(), name)
     reps = [SimpleNamespace(**r) for r in chosen]
     out = Path(__file__).parent / "reftests"

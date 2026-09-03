@@ -9,8 +9,12 @@ from eth_consensus_specs.test.helpers.genesis import create_genesis_state
 from eth_consensus_specs.test.helpers.keys import pubkey_to_privkey
 from eth_consensus_specs.test.utils.dumper import Dumper
 from eth_consensus_specs.utils import bls
-from ...gen_base.gen_typing import TestCase, TestCasePart, TestCaseResult
-from ...gen_base.output import dump_test_case_result
+from tests.generators.compliance_runners.gen_base.gen_typing import (
+    TestCase,
+    TestCasePart,
+    TestCaseResult,
+)
+from tests.generators.compliance_runners.gen_base.output import dump_test_case_result
 
 if TYPE_CHECKING:
     from pathlib import Path

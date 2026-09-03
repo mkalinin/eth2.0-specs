@@ -1,9 +1,9 @@
 # `process_execution_payload_bid` compliance tests (aspect-based)
 
 Aspect-based coverage generation for the `gloas` `process_execution_payload_bid`
-handler, following [`../TEST_METHODOLOGY.md`](../TEST_METHODOLOGY.md). Unlike the
-smoke-profile sibling runners, this one builds the methodology's full three-layer
-model: **realization aspects → handler → coverage**.
+handler, following [`../TEST_METHODOLOGY.md`](../TEST_METHODOLOGY.md). Unlike
+the smoke-profile sibling runners, this one builds the methodology's full
+three-layer model: **realization aspects → handler → coverage**.
 
 ## Pipeline
 
@@ -30,37 +30,38 @@ validation.py               independently recover every dimension via spec predi
 Each is a reusable predicate-library (`models/aspects/`); a `drivers/<name>.mzn`
 enumerates its own solution space.
 
-| aspect | coverage dimensions | states | spec | shared with |
-|---|---|---|---|---|
-| `entity_reference` | `builder_ref {SELF_BUILD,EXISTING,NON_EXISTING}` | 3 | builder_index resolution | exit / deposit |
-| `builder_lifecycle` | `deposit_to_finalized_epoch`, `withdrawable_epoch_set` | 7 | `is_active_builder` | `builder_exit_request` |
-| `builder_version` | `builder_version_valid` | 3 | version check | — |
-| `builder_pending_balance` | `has_pending_withdrawal`, `has_pending_payment` | 5 | `get_pending_balance_to_withdraw_for_builder` | `builder_exit_request` |
-| `builder_funds` | `balance_to_min_balance`, `available_to_bid` | 7 | `can_builder_cover_bid` | — |
-| `signed_message` | `builder_signature_valid`, `self_build_signature_is_infinity` | 9 | `verify_execution_payload_bid_signature` | deposit (analogous) |
-| `blob_kzg_capacity` | `bid_kzg_to_max` | 3 | commitments ≤ max | — |
-| `slot_epoch` | `bid_slot_to_state`, `state_slot_past_genesis` | 6 | slot / genesis checks | — |
-| `block_context` | `parent_block_hash/root/prev_randao _matches` | 12 | parent linkage | — |
+| aspect                    | coverage dimensions                                           | states | spec                                          | shared with            |
+| ------------------------- | ------------------------------------------------------------- | ------ | --------------------------------------------- | ---------------------- |
+| `entity_reference`        | `builder_ref {SELF_BUILD,EXISTING,NON_EXISTING}`              | 3      | builder_index resolution                      | exit / deposit         |
+| `builder_lifecycle`       | `deposit_to_finalized_epoch`, `withdrawable_epoch_set`        | 7      | `is_active_builder`                           | `builder_exit_request` |
+| `builder_version`         | `builder_version_valid`                                       | 3      | version check                                 | —                      |
+| `builder_pending_balance` | `has_pending_withdrawal`, `has_pending_payment`               | 5      | `get_pending_balance_to_withdraw_for_builder` | `builder_exit_request` |
+| `builder_funds`           | `balance_to_min_balance`, `available_to_bid`                  | 7      | `can_builder_cover_bid`                       | —                      |
+| `signed_message`          | `builder_signature_valid`, `self_build_signature_is_infinity` | 9      | `verify_execution_payload_bid_signature`      | deposit (analogous)    |
+| `blob_kzg_capacity`       | `bid_kzg_to_max`                                              | 3      | commitments ≤ max                             | —                      |
+| `slot_epoch`              | `bid_slot_to_state`, `state_slot_past_genesis`                | 6      | slot / genesis checks                         | —                      |
+| `block_context`           | `parent_block_hash/root/prev_randao _matches`                 | 12     | parent linkage                                | —                      |
 
-`base.mzn` defines `Dim = {LT,EQ,GT,F,T,NA}` with `CMP`/`CMP_NA`/`BOOLV`/`BOOLV_NA`
-subdomains, so any guarded dimension can carry an explicit `NA` (not-applicable),
-distinct from an applicable-but-unreached value.
+`base.mzn` defines `Dim = {LT,EQ,GT,F,T,NA}` with
+`CMP`/`CMP_NA`/`BOOLV`/`BOOLV_NA` subdomains, so any guarded dimension can carry
+an explicit `NA` (not-applicable), distinct from an applicable-but-unreached
+value.
 
 ## Coverage: combinatorial over aspects
 
-Coverage is **t-wise over a configurable set of aspects**, with `outcome` treated
-as just another aspect (`coverage.py`). MiniZinc enumerates the feasible space
-once; Python computes the t-wise obligations and greedily covers them (preferring
-fewer faults, so representatives stay clean). This one mechanism subsumes the
-earlier ad-hoc scopes:
+Coverage is **t-wise over a configurable set of aspects**, with `outcome`
+treated as just another aspect (`coverage.py`). MiniZinc enumerates the feasible
+space once; Python computes the t-wise obligations and greedily covers them
+(preferring fewer faults, so representatives stay clean). This one mechanism
+subsumes the earlier ad-hoc scopes:
 
-| profile | request | cases |
-|---|---|---|
-| `onewise` | 1-wise over all aspects (incl. `outcome`) — each aspect value once | 18 |
-| `normal` | 2-wise over the 10 input aspects, `outcome == ACCEPT` | 14 |
-| `exceptional` | 2-wise over `entity_reference × outcome`, rejections only | 19 |
-| `standard` | `normal ∪ exceptional` (rich on accept, each rejection per branch) | 33 |
-| `pairwise` | 2-wise over all aspects | 111 |
+| profile       | request                                                            | cases |
+| ------------- | ------------------------------------------------------------------ | ----- |
+| `onewise`     | 1-wise over all aspects (incl. `outcome`) — each aspect value once | 18    |
+| `normal`      | 2-wise over the 10 input aspects, `outcome == ACCEPT`              | 14    |
+| `exceptional` | 2-wise over `entity_reference × outcome`, rejections only          | 19    |
+| `standard`    | `normal ∪ exceptional` (rich on accept, each rejection per branch) | 33    |
+| `pairwise`    | 2-wise over all aspects                                            | 111   |
 
 `t = 1` over a single aspect is exactly what a `drivers/<aspect>.mzn` shows —
 except the driver enumerates the aspect's *intrinsic* space (standalone, before
@@ -89,8 +90,8 @@ uv run minizinc --solver gecode --all-solutions models/drivers/builder_lifecycle
 ## Output
 
 Standard [operations format](../../../../formats/operations/README.md) under
-`reftests/minimal/gloas/operations/execution_payload_bid/main/case_XXXX/`:
-`pre` / `execution_payload_bid` / `post` (omitted on rejection) `.ssz_snappy`,
+`reftests/minimal/gloas/operations/execution_payload_bid/main/case_XXXX/`: `pre`
+/ `execution_payload_bid` / `post` (omitted on rejection) `.ssz_snappy`,
 `meta.yaml`, `manifest.yaml`, and `dimensions.yaml` (the serialized solution).
 
 ## Notes
@@ -99,7 +100,8 @@ Standard [operations format](../../../../formats/operations/README.md) under
   valid, wrong-key (invalid), and `G2_POINT_AT_INFINITY` (self-build).
 - **Rejection = no `post`.** This handler `assert`s, so rejected cases omit
   `post`; only `ACCEPT` cases carry it.
-- **`parent_block_root` is `NA` at genesis** (`get_block_root_at_slot(state,
-  slot-1)` is undefined at slot 0); the `NOT_PAST_GENESIS` cases reflect this.
+- **`parent_block_root` is `NA` at genesis**
+  (`get_block_root_at_slot(state, slot-1)` is undefined at slot 0); the
+  `NOT_PAST_GENESIS` cases reflect this.
 - **Coherence in aspects.** `builder_funds` and the handler add constraints so
   the shared `bid.value` operand can't yield incoherent funds/amount combos.

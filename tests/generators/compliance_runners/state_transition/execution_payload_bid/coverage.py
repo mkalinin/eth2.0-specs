@@ -8,14 +8,23 @@ Run:
     uv run python -m ...execution_payload_bid.coverage                 # profile summary
     uv run python -m ...execution_payload_bid.coverage standard --materialize
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from ..aspect_coverage import cover, dedup, enumerate_signatures
-from .materializer import ExecutionPayloadBidMaterializer, _DIMS
+from eth_consensus_specs.gloas import minimal as spec
+from tests.generators.compliance_runners.state_transition.aspect_coverage import (
+    cover,
+    dedup,
+    enumerate_signatures,
+)
+from tests.generators.compliance_runners.state_transition.execution_payload_bid.materializer import (
+    _DIMS,
+    ExecutionPayloadBidMaterializer,
+)
 
 # Input aspects (realization + the handler-local bid amount).
 INPUT_ASPECTS = {
@@ -29,8 +38,11 @@ INPUT_ASPECTS = {
     "bid_amount": ["amount_positive"],
     "blob_kzg_capacity": ["bid_kzg_to_max"],
     "slot_epoch": ["bid_slot_to_state", "state_slot_past_genesis"],
-    "block_context": ["bid_parent_block_hash_matches", "bid_parent_block_root_matches",
-                      "bid_prev_randao_matches"],
+    "block_context": [
+        "bid_parent_block_hash_matches",
+        "bid_parent_block_root_matches",
+        "bid_prev_randao_matches",
+    ],
 }
 OUTCOME_ASPECT = {"outcome": ["outcome"]}
 ALL_ASPECTS = {**INPUT_ASPECTS, **OUTCOME_ASPECT}
@@ -95,10 +107,11 @@ def main() -> int:
         return 0
 
     n_obl, chosen = build_profile(recs, args[0])
-    print(f"profile '{args[0]}': {len(chosen)} cases"
-          + (f" covering {n_obl} obligations" if n_obl >= 0 else ""))
+    print(
+        f"profile '{args[0]}': {len(chosen)} cases"
+        + (f" covering {n_obl} obligations" if n_obl >= 0 else "")
+    )
     if materialize:
-        from eth_consensus_specs.gloas import minimal as spec
         reps = [SimpleNamespace(**rec) for rec in chosen]
         out = Path(__file__).parent / "reftests"
         print()

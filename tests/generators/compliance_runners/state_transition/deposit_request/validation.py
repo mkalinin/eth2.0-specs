@@ -6,6 +6,7 @@ request (with slot = pre.slot), the queue grew by one, and the start index was
 set iff it was unset. Plus the post-state oracle. Imports neither the
 materializer nor the model.
 """
+
 from __future__ import annotations
 
 import sys
@@ -48,8 +49,10 @@ def validate_case(case_dir: Path) -> tuple[list[Check], list[str]]:
     claimed = _YAML.load((case_dir / "dimensions.yaml").read_text())["claimed"]
     actual = recover(pre, request)
 
-    checks = [Check(d, c, actual.get(d, "<none>"), "ok" if actual.get(d, "<none>") == c else "mismatch")
-              for d, c in claimed.items()]
+    checks = [
+        Check(d, c, actual.get(d, "<none>"), "ok" if actual.get(d, "<none>") == c else "mismatch")
+        for d, c in claimed.items()
+    ]
 
     errors: list[str] = []
     # Output correctness.
@@ -57,8 +60,11 @@ def validate_case(case_dir: Path) -> tuple[list[Check], list[str]]:
         errors.append("pending_deposits did not grow by exactly one")
     else:
         expected = spec.PendingDeposit(
-            pubkey=request.pubkey, withdrawal_credentials=request.withdrawal_credentials,
-            amount=request.amount, signature=request.signature, slot=pre.slot,
+            pubkey=request.pubkey,
+            withdrawal_credentials=request.withdrawal_credentials,
+            amount=request.amount,
+            signature=request.signature,
+            slot=pre.slot,
         )
         if post.pending_deposits[len(post.pending_deposits) - 1] != expected:
             errors.append("appended PendingDeposit does not match the request (+ pre.slot)")

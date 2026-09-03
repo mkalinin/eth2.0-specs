@@ -9,14 +9,23 @@ Run:
     uv run python -m ...builder_exit_request.coverage                 # summary
     uv run python -m ...builder_exit_request.coverage standard --materialize
 """
+
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
-from ..aspect_coverage import cover, dedup, enumerate_signatures
-from .materializer import BuilderExitRequestMaterializer, _DIMS
+from eth_consensus_specs.gloas import minimal as spec
+from tests.generators.compliance_runners.state_transition.aspect_coverage import (
+    cover,
+    dedup,
+    enumerate_signatures,
+)
+from tests.generators.compliance_runners.state_transition.builder_exit_request.materializer import (
+    _DIMS,
+    BuilderExitRequestMaterializer,
+)
 
 INPUT_ASPECTS = {
     "builder_membership": ["builder_pubkey_found"],
@@ -62,7 +71,6 @@ def _recs():
 
 
 def materialize_profile(name: str) -> int:
-    from eth_consensus_specs.gloas import minimal as spec
     _, chosen = build_profile(_recs(), name)
     reps = [SimpleNamespace(**r) for r in chosen]
     out = Path(__file__).parent / "reftests"
@@ -85,8 +93,10 @@ def main() -> int:
         return 0
 
     n_obl, chosen = build_profile(recs, args[0])
-    print(f"profile '{args[0]}': {len(chosen)} cases"
-          + (f" covering {n_obl} obligations" if n_obl >= 0 else ""))
+    print(
+        f"profile '{args[0]}': {len(chosen)} cases"
+        + (f" covering {n_obl} obligations" if n_obl >= 0 else "")
+    )
     if materialize:
         materialize_profile(args[0])
         print("Validate with: python -m ...builder_exit_request.validation")

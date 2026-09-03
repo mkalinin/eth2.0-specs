@@ -1,7 +1,11 @@
 """Generate and validate standard Gloas proposer-slashing cases."""
 
-from .coverage import materialize_profile
-from .validation import main as validate
+from tests.generators.compliance_runners.state_transition.proposer_slashing.coverage import (
+    materialize_profile,
+)
+from tests.generators.compliance_runners.state_transition.proposer_slashing.validation import (
+    main as validate,
+)
 
 
 def main() -> int:

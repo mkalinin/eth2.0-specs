@@ -11,8 +11,10 @@ from tests.generators.compliance_runners.state_transition.aspect_coverage import
     cover,
     enumerate_signatures,
 )
-
-from .materializer import _DIMS, PendingDepositsMaterializer
+from tests.generators.compliance_runners.state_transition.pending_deposits.materializer import (
+    _DIMS,
+    PendingDepositsMaterializer,
+)
 
 QUEUE_ASPECT = {
     "queue_layout": ["queue_layout", "secondary_role"],

@@ -9,8 +9,10 @@ from tests.generators.compliance_runners.state_transition.aspect_coverage import
     cover,
     enumerate_signatures,
 )
-
-from .materializer import _DIMS, BuilderPendingPaymentsMaterializer
+from tests.generators.compliance_runners.state_transition.builder_pending_payments.materializer import (
+    _DIMS,
+    BuilderPendingPaymentsMaterializer,
+)
 
 MODEL = Path(__file__).parent / "models" / "handler_builder_pending_payments.mzn"
 ASPECTS = {

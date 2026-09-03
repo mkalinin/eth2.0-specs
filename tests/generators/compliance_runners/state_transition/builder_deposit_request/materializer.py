@@ -6,28 +6,40 @@ the solution. The operation never raises, so `post` is always present.
 
 Spec: specs/gloas/beacon-chain.md process_builder_deposit_request.
 """
+
 from __future__ import annotations
 
 import shutil
-from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-from eth_consensus_specs.test.utils.dumper import Dumper
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
-from eth_consensus_specs.test.helpers.keys import builder_pubkeys, builder_pubkey_to_privkey
+from eth_consensus_specs.test.helpers.keys import builder_pubkey_to_privkey, builder_pubkeys
+from eth_consensus_specs.test.utils.dumper import Dumper
 from eth_consensus_specs.utils import bls
+from tests.generators.compliance_runners.gen_base.gen_typing import (
+    TestCase,
+    TestCasePart,
+    TestCaseResult,
+)
+from tests.generators.compliance_runners.gen_base.output import dump_test_case_result
 
-from ...gen_base.gen_typing import TestCase, TestCaseResult, TestCasePart
-from ...gen_base.output import dump_test_case_result
+if TYPE_CHECKING:
+    from pathlib import Path
 
 REQUEST_PUBKEY = builder_pubkeys[0]
 WRONG_PUBKEY = builder_pubkeys[1]
 EPOCHS_PAST_GENESIS = 10
 
 _DIMS = [
-    "wc_is_builder_prefix", "builder_pubkey_found", "builder_signature_valid", "amount_nonzero",
-    "builder_withdrawable_epoch_set", "builder_balance_zero",
-    "reset_applies", "builder_credited", "outcome",
+    "wc_is_builder_prefix",
+    "builder_pubkey_found",
+    "builder_signature_valid",
+    "amount_nonzero",
+    "builder_withdrawable_epoch_set",
+    "builder_balance_zero",
+    "reset_applies",
+    "builder_credited",
+    "outcome",
 ]
 
 
@@ -59,7 +71,8 @@ class BuilderDepositRequestMaterializer:
     def _base_state(self) -> Any:
         spec = self.spec
         state = create_genesis_state(
-            spec, validator_balances=[spec.MAX_EFFECTIVE_BALANCE] * 64,
+            spec,
+            validator_balances=[spec.MAX_EFFECTIVE_BALANCE] * 64,
             activation_threshold=spec.MAX_EFFECTIVE_BALANCE,
         )
         state.builders = type(state.builders)()
@@ -104,25 +117,35 @@ class BuilderDepositRequestMaterializer:
         post = pre.copy()
         spec.process_builder_deposit_request(post, request)  # never raises
 
-        claimed = {n: (_b(sol, n) if isinstance(getattr(sol, n), bool) else _s(sol, n)) for n in _DIMS}
+        claimed = {
+            n: (_b(sol, n) if isinstance(getattr(sol, n), bool) else _s(sol, n)) for n in _DIMS
+        }
         return pre, request, post, claimed
 
     def write_case(self, dumper: Dumper, output_dir: Path, index: int, sol: Any) -> None:
         pre, request, post, claimed = self.materialize_solution(sol)
         case_name = f"case_{index:04d}"
         test_case = TestCase(
-            fork_name=self.fork_name, preset_name=self.preset_name,
-            runner_name="operations", handler_name="builder_deposit_request",
-            suite_name="main", case_name=case_name,
+            fork_name=self.fork_name,
+            preset_name=self.preset_name,
+            runner_name="operations",
+            handler_name="builder_deposit_request",
+            suite_name="main",
+            case_name=case_name,
         )
         test_case.set_output_dir(str(output_dir))
         case_parts: list[TestCasePart] = [
-            ("pre", "ssz", pre.encode_bytes()),  # type: ignore
-            ("builder_deposit_request", "ssz", request.encode_bytes()),  # type: ignore
-            ("post", "ssz", post.encode_bytes()),  # type: ignore
+            ("pre", "ssz", pre.encode_bytes()),
+            ("builder_deposit_request", "ssz", request.encode_bytes()),
+            ("post", "ssz", post.encode_bytes()),
         ]
-        meta = {"description": f"process_builder_deposit_request: {claimed['outcome']}", "bls_setting": 1}
-        dump_test_case_result(TestCaseResult(test_case=test_case, meta=meta, case_parts=case_parts), dumper)
+        meta = {
+            "description": f"process_builder_deposit_request: {claimed['outcome']}",
+            "bls_setting": 1,
+        }
+        dump_test_case_result(
+            TestCaseResult(test_case=test_case, meta=meta, case_parts=case_parts), dumper
+        )
         dumper.dump_data(test_case.dir, "dimensions", {"case": case_name, "claimed": claimed})
 
     def materialize_reps(self, output_dir: Path, reps: list) -> int:

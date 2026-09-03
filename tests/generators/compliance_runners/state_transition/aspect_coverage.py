@@ -15,13 +15,17 @@ and then calls `enumerate_signatures(...)` + `cover(...)`.
 
 See `execution_payload_bid/coverage.py` for a worked instantiation.
 """
+
 from __future__ import annotations
 
+from collections.abc import Callable
 from itertools import combinations
-from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING
 
 import minizinc
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 Aspects = dict[str, list[str]]
 Rank = Callable[[dict], int]
@@ -35,8 +39,9 @@ def signature(rec: dict, aspects: Aspects) -> tuple:
     return tuple(_state(rec, dims) for dims in aspects.values())
 
 
-def enumerate_signatures(model_path: Path, dims: list[str], aspects: Aspects,
-                         rank: Rank | None = None) -> list[dict]:
+def enumerate_signatures(
+    model_path: Path, dims: list[str], aspects: Aspects, rank: Rank | None = None
+) -> list[dict]:
     """Distinct aspect-state representatives over the model's feasible space.
 
     Dedups by the full aspect signature, keeping the lowest-`rank` representative.
@@ -54,7 +59,9 @@ def enumerate_signatures(model_path: Path, dims: list[str], aspects: Aspects,
     return list(reps.values())
 
 
-def _slice(recs: list[dict], outcome_dim: str, outcome_filter: str | None, accept: set) -> list[dict]:
+def _slice(
+    recs: list[dict], outcome_dim: str, outcome_filter: str | None, accept: set
+) -> list[dict]:
     if outcome_filter == "normal":
         return [r for r in recs if r[outcome_dim] in accept]
     if outcome_filter == "exceptional":
@@ -62,9 +69,14 @@ def _slice(recs: list[dict], outcome_dim: str, outcome_filter: str | None, accep
     return recs
 
 
-def cover(recs: list[dict], aspects: Aspects, t: int,
-          outcome_filter: str | None = None, outcome_dim: str = "outcome",
-          accept: str | set = "ACCEPT") -> tuple[int, list[dict]]:
+def cover(
+    recs: list[dict],
+    aspects: Aspects,
+    t: int,
+    outcome_filter: str | None = None,
+    outcome_dim: str = "outcome",
+    accept: str | set = "ACCEPT",
+) -> tuple[int, list[dict]]:
     """Greedy t-wise covering set over `aspects` (within an optional outcome slice).
 
     `accept` is the outcome value (or set of values) that count as "normal";
@@ -95,7 +107,9 @@ def cover(recs: list[dict], aspects: Aspects, t: int,
         best, best_gain, best_rank = None, 0, 1 << 30
         for proj, combos in covered_by.items():
             gain = len(combos & uncovered)
-            if gain > best_gain or (gain == best_gain and gain > 0 and reps[proj]["_rank"] < best_rank):
+            if gain > best_gain or (
+                gain == best_gain and gain > 0 and reps[proj]["_rank"] < best_rank
+            ):
                 best, best_gain, best_rank = proj, gain, reps[proj]["_rank"]
         if best is None or best_gain == 0:
             break

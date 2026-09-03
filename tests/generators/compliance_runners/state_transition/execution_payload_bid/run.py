@@ -5,10 +5,15 @@ Coordinator only; the materializer and validation stay independent of each other
 Usage:
     uv run python -m tests.generators.compliance_runners.state_transition.execution_payload_bid.run
 """
+
 from __future__ import annotations
 
-from .materializer import main as generate
-from .validation import main as validate
+from tests.generators.compliance_runners.state_transition.execution_payload_bid.materializer import (
+    main as generate,
+)
+from tests.generators.compliance_runners.state_transition.execution_payload_bid.validation import (
+    main as validate,
+)
 
 
 def main() -> int:

@@ -3,10 +3,15 @@
 Usage:
     uv run python -m ...consolidation_request.run
 """
+
 from __future__ import annotations
 
-from .coverage import materialize_profile
-from .validation import main as validate
+from tests.generators.compliance_runners.state_transition.consolidation_request.coverage import (
+    materialize_profile,
+)
+from tests.generators.compliance_runners.state_transition.consolidation_request.validation import (
+    main as validate,
+)
 
 
 def main() -> int:

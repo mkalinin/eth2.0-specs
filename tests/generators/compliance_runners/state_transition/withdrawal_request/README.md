@@ -1,23 +1,23 @@
 # `process_withdrawal_request` compliance tests (aspect-based)
 
 Aspect-based coverage for the `process_withdrawal_request` handler (defined in
-Electra, inherited by gloas). The first **validator-side** runner: it establishes
-the reusable validator aspect family and reuses `source_authorization` from the
-builder side.
+Electra, inherited by gloas). The first **validator-side** runner: it
+establishes the reusable validator aspect family and reuses
+`source_authorization` from the builder side.
 
 ## Aspects
 
-| aspect | dims | source |
-|---|---|---|
-| `withdrawal_amount` | `is_full_exit_request` | new (`../aspects/`) |
-| `partial_queue_capacity` | `partial_queue_full` | new (`../aspects/`) |
-| `validator_membership` | `validator_pubkey_found` | validator family (new) |
-| `validator_credential` | `validator_credential` (BLS/ETH1/COMPOUNDING) | validator family (new) |
-| `source_authorization` | `source_address_matches` | **shared with builder_exit_request** |
-| `validator_lifecycle` | `validator_active`, `validator_exiting`, `validator_old_enough` | validator family (new) |
-| `validator_pending_withdrawal` | `has_pending_partial_withdrawal` | validator family (new) |
-| `validator_balance` | `sufficient_effective_balance`, `has_excess_balance` | validator family (new) |
-| `outcome` | `outcome` | handler outcome |
+| aspect                         | dims                                                            | source                               |
+| ------------------------------ | --------------------------------------------------------------- | ------------------------------------ |
+| `withdrawal_amount`            | `is_full_exit_request`                                          | new (`../aspects/`)                  |
+| `partial_queue_capacity`       | `partial_queue_full`                                            | new (`../aspects/`)                  |
+| `validator_membership`         | `validator_pubkey_found`                                        | validator family (new)               |
+| `validator_credential`         | `validator_credential` (BLS/ETH1/COMPOUNDING)                   | validator family (new)               |
+| `source_authorization`         | `source_address_matches`                                        | **shared with builder_exit_request** |
+| `validator_lifecycle`          | `validator_active`, `validator_exiting`, `validator_old_enough` | validator family (new)               |
+| `validator_pending_withdrawal` | `has_pending_partial_withdrawal`                                | validator family (new)               |
+| `validator_balance`            | `sufficient_effective_balance`, `has_excess_balance`            | validator family (new)               |
+| `outcome`                      | `outcome`                                                       | handler outcome                      |
 
 The validator family (`validator_membership`, `validator_credential`,
 `validator_lifecycle`, `validator_balance`, `validator_pending_withdrawal`) is
@@ -36,12 +36,12 @@ Never raises — `post` is always present. No BLS, no churn gate.
 
 ## Coverage profiles (`coverage.py`)
 
-| profile | cases |
-|---|---|
-| `onewise` | 13 |
-| `normal` (2-wise inputs, effected outcomes) | 9 |
-| `exceptional` (1-wise outcome, rejections/no-ops) | 10 |
-| `standard` (`normal ∪ exceptional`) | 19 |
+| profile                                           | cases |
+| ------------------------------------------------- | ----- |
+| `onewise`                                         | 13    |
+| `normal` (2-wise inputs, effected outcomes)       | 9     |
+| `exceptional` (1-wise outcome, rejections/no-ops) | 10    |
+| `standard` (`normal ∪ exceptional`)               | 19    |
 
 ## Usage
 

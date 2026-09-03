@@ -9,8 +9,10 @@ from tests.generators.compliance_runners.state_transition.aspect_coverage import
     cover,
     enumerate_signatures,
 )
-
-from .materializer import _DIMS, PtcWindowMaterializer
+from tests.generators.compliance_runners.state_transition.ptc_window.materializer import (
+    _DIMS,
+    PtcWindowMaterializer,
+)
 
 MODEL = Path(__file__).parent / "models" / "handler_ptc_window.mzn"
 ASPECTS = {
