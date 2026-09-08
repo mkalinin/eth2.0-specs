@@ -110,6 +110,7 @@ class FastConfirmationStore:
     previous_epoch_greatest_unrealized_checkpoint: Checkpoint
     previous_slot_head: Root
     current_slot_head: Root
+    resilient_confirmed_root: Root
 ```
 
 #### `get_fast_confirmation_store`
@@ -132,6 +133,8 @@ def get_fast_confirmation_store(store: Store) -> FastConfirmationStore:
         previous_epoch_greatest_unrealized_checkpoint=store.finalized_checkpoint,
         previous_slot_head=store.finalized_checkpoint.root,
         current_slot_head=store.finalized_checkpoint.root,
+        # Must be loaded by implementation from disk instead
+        resilient_confirmed_root=store.finalized_checkpoint.root,
     )
 ```
 
@@ -1058,4 +1061,11 @@ a slot.
 def on_fast_confirmation(fcr_store: FastConfirmationStore) -> None:
     update_fast_confirmation_variables(fcr_store)
     fcr_store.confirmed_root = get_latest_confirmed(fcr_store)
+
+    # Update resilient root
+    store = fcr_store.store
+    confirmed_slot = get_block_slot(store, fcr_store.confirmed_root)
+    resilient_confirmed_slot = get_block_slot(store, fcr_store.resilient_confirmed_root)
+    if confirmed_slot >= resilient_confirmed_slot:
+        fcr_store.resilient_confirmed_root = fcr_store.confirmed_root
 ```
