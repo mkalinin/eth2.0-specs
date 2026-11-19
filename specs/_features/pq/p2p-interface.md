@@ -1006,7 +1006,8 @@ def validate_attestation_gossip(
     if attestation_round_key in seen.attestation_validator_rounds:
         raise GossipIgnore("already seen attestation for this round and validator")
 
-    # [IGNORE] The attestation's round is the round of its committee's slot
+    # [New in PQ]
+    # [IGNORE] The attestation is signed at the leaf of the round of its committee's slot
     if attestation.round != compute_round_at_slot(slot):
         raise GossipIgnore("attestation round is not the round of its committee's slot")
 
@@ -1030,10 +1031,15 @@ def validate_attestation_gossip(
         raise GossipIgnore("finalized block is not an ancestor of the target block")
 
     # [REJECT] The attester is a member of the committee
-    epoch = compute_epoch_at_round(attestation.round)
+    # (the committees and the signature domain are those of the target's epoch)
+    epoch = compute_epoch_at_slot(store.blocks[data.target.root].slot)
     committee = get_attestation_committee(state, epoch, committee_index)
     if attester_index not in committee:
         raise GossipReject("attester is not a member of the committee")
+
+    # [IGNORE] The attester is active
+    if not is_active_validator(state.validators[attester_index], get_current_epoch(state)):
+        raise GossipIgnore("attester is not active")
 
     # [REJECT] The attestation signature is valid
     attester = state.validators[attester_index]

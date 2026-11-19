@@ -83,9 +83,9 @@ balance stays locked. See [the fork document](./fork.md) for details.
 
 PQ replaces the combined LMD-GHOST and Casper FFG attestation with separate head
 votes for the available chain (AC) and attestations for the finality gadget
-(FG). Each epoch, every active validator sits on one attestation committee and,
-in every round, casts its FG attestation in that committee's slot. In every
-slot, a head vote committee casts head votes.
+(FG). Every validator sits on the attestation committee given by its index, and
+an active validator casts its FG attestation in that committee's slot in every
+round. In every slot, a head vote committee casts head votes.
 
 *TODO*: Specify the fork-choice interfaces and duty deadlines referenced below.
 
@@ -111,6 +111,8 @@ class FinalitySigningRecord:
     timeouts: dict[Height, set[Root]]
     finality_locks: dict[Height, Root]
     entries: dict[Height, set[Root]]
+    # [New in PQ]
+    rounds: set[Round]
 ```
 
 The fields are initialized empty for a validator with no prior FG signing
@@ -120,6 +122,9 @@ history:
 - `timeouts[h]`: the targets named by timeouts signed at height `h`.
 - `finality_locks[h]`: the block named by a finality vote at height `h`.
 - `entries[h]`: entries named by any height vote at height `h`.
+- `rounds`: rounds in which an attestation was signed. An attestation is signed
+  at the XMSS leaf of its round, so a second attestation in a round would reuse
+  the leaf.
 
 *Note*: The record persists across restarts. Finality signing locks do not
 expire and are distinct from the temporary AC locks maintained by fork choice.
@@ -197,20 +202,24 @@ def get_attestation_committee_assignment(
 ) -> CommitteeIndex | None:
     """
     Return the index of the validator's attestation committee in ``epoch``, if
-    any.
+    it is active in ``epoch``.
     """
-    for index in range(ATTESTATION_COMMITTEES_PER_ROUND):
-        committee_index = CommitteeIndex(index)
-        if validator_index in get_attestation_committee(state, epoch, committee_index):
-            return committee_index
-    return None
+    # [Modified in PQ:EIP8453]
+    # The committee index is fixed by the validator index
+    if not is_active_validator(state.validators[validator_index], epoch):
+        return None
+    return CommitteeIndex(validator_index % ATTESTATION_COMMITTEES_PER_ROUND)
 ```
 
-Every active validator sits on exactly one attestation committee per epoch. In
-each round, it attests in the slot
-`compute_attestation_committee_slot(round, committee_index)`, using the
-committee of that slot's epoch. Round numbering is defined by
-`compute_round_at_slot` and does not restart at the PQ fork.
+A validator's committee index is fixed by its validator index, and so is its
+subnet. An active validator attests in each round, in the slot
+`compute_attestation_committee_slot(round, committee_index)`, which moves by one
+slot in every round. Round numbering is defined by `compute_round_at_slot` and
+does not restart at the PQ fork.
+
+*Note*: The committees of an epoch also contain validators that are eligible for
+activation but not yet active, and validators that exit after that epoch. A
+validator that is not active has no attestation duty.
 
 ### Head vote committees
 
@@ -241,9 +250,10 @@ seats in that slot's committee.
 
 ### Lookahead
 
-Assignments are computed from the chain state using `get_attestation_committee`
-and `get_head_vote_committee`. A validator should recompute its assignment when
-the dependent chain state changes.
+Head vote assignments are computed from the chain state using
+`get_head_vote_committee`. A validator should recompute them when the dependent
+chain state changes. A validator's attestation committee index is fixed by its
+validator index, and the chain state determines whether it is active.
 
 *TODO*: Specify assignment lookahead and the dependent root in the PQ
 fork-choice and networking specifications.
@@ -337,12 +347,13 @@ Set `block.body.attestations` to aggregates selected from the FG attestation
 pool, up to `MAX_ATTESTATIONS_PQ`. Each aggregate must satisfy the verification
 conditions in
 [`process_attestation`](./beacon-chain.md#modified-process_attestation),
-including its round and committee encoding. `compute_on_chain_aggregate` is
-deprecated.
+including its round and committee encoding. Only attestations for the current
+target of `state` are valid. Attestations with the same data signed in different
+rounds are in different aggregates, since an aggregate holds the signatures of
+one round. `compute_on_chain_aggregate` is deprecated.
 
 A proposer should prefer aggregates that add target, progress or
-pending-finality participation. An attestation for a previous height can still
-contribute to a retained finality pair.
+pending-finality participation.
 
 ##### Attester slashings
 
@@ -683,10 +694,20 @@ def get_finality_attestation_data(
 
 ##### Record attestation
 
-Before signing, the validator records the selected `attestation_data`:
+Before signing, the validator records the selected `attestation_data` and the
+round of its assigned slot. If it has already signed an attestation in that
+round, it sends no new attestation:
 
 ```python
-def record_finality_attestation(record: FinalitySigningRecord, data: AttestationData) -> None:
+def record_finality_attestation(
+    record: FinalitySigningRecord,
+    data: AttestationData,
+    # [New in PQ]
+    round: Round,
+) -> None:
+    # [New in PQ]
+    assert round not in record.rounds
+    record.rounds.add(round)
     height, root = data.target.height, data.target.root
     record.entries.setdefault(height, set()).add(root)
     if data.finality != HeightCheckpoint.empty():
@@ -712,19 +733,22 @@ fields:
 - Set `attestation.data = attestation_data`.
 - Set `attestation.round` to the round of the assigned slot.
 - Set `attestation.signature` to
-  `get_attestation_signature(state, attestation_data, attestation.round, privkey)`.
+  `get_attestation_signature(source_state, attestation_data, epoch, attestation.round, privkey)`,
+  where `epoch = get_attestation_epoch(source_state)`, the epoch of the target.
 
 ```python
 def get_attestation_signature(
     state: BeaconState,
     attestation_data: AttestationData,
     # [New in PQ:EIP8453]
+    epoch: Epoch,
+    # [New in PQ]
     round: Round,
     # [Modified in PQ]
     privkey: Bytes32,
 ) -> XMSSSignature:
     # [Modified in PQ:EIP8453]
-    domain = get_domain(state, DOMAIN_FINALITY_ATTESTER, compute_epoch_at_round(round))
+    domain = get_domain(state, DOMAIN_FINALITY_ATTESTER, epoch)
     signing_root = compute_signing_root(attestation_data, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_attestation_leaf_index(round)
@@ -733,7 +757,13 @@ def get_attestation_signature(
 
 The signature covers `attestation.data`, but not `attestation.round` or
 `attestation.committee_index`. It is signed at the leaf of `attestation.round`,
-so a validator MUST NOT sign two different attestations in the same round.
+so a validator MUST NOT sign two different attestations in the same round (see
+`FinalitySigningRecord.rounds`).
+
+*Note*: `source_state.target_slot` is the slot of the target block, so every
+validator signing for the same target uses the same epoch. The target is current
+in the state of every chain that can include the attestation, and that state has
+the same target slot.
 
 #### Broadcast attestation
 
@@ -812,10 +842,11 @@ def get_aggregate_head_vote_stark(
 ##### FG attestations
 
 Construct `aggregate_attestation` using `get_aggregate_attestation` with
-individual attestations for the same data and round.
-
-*TODO*: Specify how attestations cast in different rounds are aggregated. Their
-signers sign at different XMSS leaves, so they cannot share an aggregate.
+individual attestations for the same data and round, where `state` is a state
+whose target is the target of that data, such as the aggregator's source state.
+Attestations cast in different epochs can be aggregated together, but
+attestations cast in different rounds cannot, since their signers sign at
+different XMSS leaves. They are aggregated per round.
 
 ```python
 def get_aggregate_attestation(
@@ -831,12 +862,13 @@ def get_aggregate_attestation(
     participants = {a.attester_index for a in attestations}
     assert len(participants) == len(attestations)
 
+    # [Modified in PQ:EIP8453]
+    # Each signer's committee is fixed by its index
     committee_bits = AttestationCommitteeBits()
-    for attestation in attestations:
-        assert attestation.committee_index < ATTESTATION_COMMITTEES_PER_ROUND
-        committee_bits[attestation.committee_index] = Boolean(True)
+    for validator_index in participants:
+        committee_bits[validator_index % ATTESTATION_COMMITTEES_PER_ROUND] = Boolean(True)
 
-    epoch = compute_epoch_at_round(round)
+    epoch = get_attestation_epoch(state)
     aggregation_bits = get_attestation_aggregation_bits(state, epoch, committee_bits, participants)
     return Attestation(
         aggregation_bits=aggregation_bits,
@@ -896,12 +928,12 @@ def get_attestation_aggregation_bits(
 The validator broadcasts the aggregate and its proof for block inclusion.
 
 *TODO*: Specify aggregate gossip messages, their proof wrappers and broadcast
-deadlines. Gossip deduplication must use the data and signers.
+deadlines. Gossip deduplication must use the data, round and signers.
 
-*Note*: An FG aggregate's round must be no later than
-`get_current_round(state)`, and its epoch no earlier than
-`compute_epoch_at_slot(state.finalized_slot)`, when included in a block. Its
-data must also remain valid against the inclusion state.
+*Note*: A block can include an FG aggregate only while its target is the current
+target of the inclusion state, and only if its round is no later than
+`get_current_round(state)`. Its encoding stays valid for that whole time, since
+the committees depend only on the epoch of the target.
 
 ### Sync committees
 
