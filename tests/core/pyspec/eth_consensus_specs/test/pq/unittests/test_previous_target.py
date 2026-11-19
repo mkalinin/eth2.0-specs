@@ -122,3 +122,41 @@ def test_previous_target_uses_its_epoch_committees(spec, state):
     assert late in spec.get_attestation_committee(state, spec.Epoch(1), index)
     signers = spec.get_attesting_indices(state, full_attestation(spec, state, previous))
     assert late not in signers
+
+
+def apply_rows(spec, state, previous_first):
+    """
+    Apply a previous-target row and a current-target row with the same pending
+    pair in the given order. Return the proposer reward they paid.
+    """
+    pair = checkpoint(spec, 1, 1)
+    previous = spec.AttestationData(
+        target=state.previous_target_checkpoint, timeout=False, finality=pair
+    )
+    current = spec.AttestationData(target=state.target_checkpoint, timeout=False, finality=pair)
+    rows = [previous, current] if previous_first else [current, previous]
+    proposer = spec.get_beacon_proposer_index(state)
+    before = state.balances[proposer]
+    for data in rows:
+        spec.process_attestation(state, full_attestation(spec, state, data))
+    signers = spec.get_attesting_indices(state, full_attestation(spec, state, current))
+    for index in signers:
+        assert spec.has_flag(state.round_participation[index], spec.FINALITY_FLAG_INDEX)
+        assert state.pending_finality[0].participation[index]
+    return state.balances[proposer] - before
+
+
+def test_current_row_earns_finality_flag_in_either_order(spec, state):
+    first, second = state.copy(), state.copy()
+    previous_first_reward = apply_rows(spec, first, previous_first=True)
+    current_first_reward = apply_rows(spec, second, previous_first=False)
+    assert previous_first_reward > 0
+    assert previous_first_reward == current_first_reward
+    # A repeated current row in the same round pays nothing more
+    current = spec.AttestationData(
+        target=second.target_checkpoint, timeout=False, finality=checkpoint(spec, 1, 1)
+    )
+    proposer = spec.get_beacon_proposer_index(second)
+    before = second.balances[proposer]
+    spec.process_attestation(second, full_attestation(spec, second, current))
+    assert second.balances[proposer] == before

@@ -255,10 +255,11 @@ validator sits on the attestation committee given by its index modulo
 `ATTESTATION_COMMITTEES_PER_ROUND`, and committees are spread evenly over the
 slots of a round, moving by at most one slot from round to round. In every
 round, an active validator casts its FG attestation in its committee's slot. A
-block includes only attestations for the chain's current target. Their bits are
-laid out in the committees of the target's epoch, so an aggregate keeps one
-encoding for as long as it can be included. Rewards and inactivity are settled
-at the end of each round, in `process_round`.
+block includes attestations for the chain's current target, and for its previous
+target, which count only toward pending justifications. Their bits are laid out
+in the committees of the target's epoch, so an aggregate keeps one encoding for
+as long as it can be included. Rewards and inactivity are settled at the end of
+each round, in `process_round`.
 
 A validator earns the progress flag for a target vote or a timeout at the
 current height, and the finality flag for a finality pair of a pending
@@ -913,11 +914,15 @@ class BeaconState(ProgressiveContainer):
     # [New in PQ:EIP8205]
     builder_preregistrations: BuilderPreregistrations
     # [New in PQ:EIP8453]
+    previous_target_checkpoint: HeightCheckpoint
+    # [New in PQ:EIP8453]
     target_checkpoint: HeightCheckpoint
     # [New in PQ:EIP8453]
     justified_checkpoint: HeightCheckpoint
     # [New in PQ:EIP8453]
     finalized_checkpoint: HeightCheckpoint
+    # [New in PQ:EIP8453]
+    previous_target_slot: Slot
     # [New in PQ:EIP8453]
     target_slot: Slot
     # [New in PQ:EIP8453]
@@ -934,10 +939,6 @@ class BeaconState(ProgressiveContainer):
     head_vote_participation: HeadVoteParticipation
     # [New in PQ:EIP8453]
     head_vote_committee_window: HeadVoteCommitteeWindow
-    # [New in PQ:EIP8453]
-    previous_target_checkpoint: HeightCheckpoint
-    # [New in PQ:EIP8453]
-    previous_target_slot: Slot
 ```
 
 #### `Builder`
@@ -2998,15 +2999,17 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
 ###### Modified `process_attestation`
 
 *Note*: The function `process_attestation` is rewritten for the finality gadget.
-Flags are credited only the first time a validator's progress or finality
-participation is recorded, and count toward the round in which the attestation
-is included. Only attestations for the current or the previous target are
-included, and only signers that are active are counted. An attestation for the
-previous target counts only toward the participation of the pending
-justification its finality pair names, and credits no flag or reward. An
-attestation carries no signature, so `process_stark` verifies the signatures of
-all attestations in the block instead. Its `round` only selects the XMSS leaf of
-those signatures, which cannot be of a future round.
+The progress flag is credited the first time a validator's progress is recorded
+at the height, and the finality flag whenever a finality pair counts for a
+pending justification and the validator does not yet have it in the round. Both
+count toward the round in which the attestation is included. Only attestations
+for the current or the previous target are included, and only signers that are
+active are counted. An attestation for the previous target counts only toward
+the participation of the pending justification its finality pair names, and
+credits no flag or reward. An attestation carries no signature, so
+`process_stark` verifies the signatures of all attestations in the block
+instead. Its `round` only selects the XMSS leaf of those signatures, which
+cannot be of a future round.
 
 ```python
 def process_attestation(state: BeaconState, attestation: Attestation) -> None:
@@ -3025,7 +3028,9 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
         if not is_active_validator(state.validators[index], get_current_epoch(state)):
             continue
         # A vote for the previous target counts only for a pending
-        # justification, without flags or rewards
+        # justification, without flags or rewards. It writes the participation
+        # unconditionally because it carries no reward; a reward for it would
+        # need its own once-only check
         if is_previous_target_attestation_data(state, data):
             for pending in state.pending_finality:
                 if pending.checkpoint == data.finality:
@@ -3033,10 +3038,13 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
             continue
         base_reward = get_round_base_reward(state, index)
         for pending in state.pending_finality:
-            if pending.checkpoint == data.finality and not pending.participation[index]:
+            if pending.checkpoint == data.finality:
                 pending.participation[index] = Boolean(True)
-                add_participation_flag(state, index, FINALITY_FLAG_INDEX)
-                proposer_reward_numerator += base_reward * FINALITY_WEIGHT
+                # The flag does not depend on whether a vote for the previous
+                # target already counted the pair
+                if not has_flag(state.round_participation[index], FINALITY_FLAG_INDEX):
+                    add_participation_flag(state, index, FINALITY_FLAG_INDEX)
+                    proposer_reward_numerator += base_reward * FINALITY_WEIGHT
         if not state.progress_participation[index]:
             state.progress_participation[index] = Boolean(True)
             add_participation_flag(state, index, PROGRESS_FLAG_INDEX)

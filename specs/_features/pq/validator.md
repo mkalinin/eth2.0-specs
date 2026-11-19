@@ -420,9 +420,12 @@ conditions in
 [`process_attestation`](./beacon-chain.md#modified-process_attestation),
 including its round and committee encoding. Only attestations for the current or
 the previous target of `state` are valid. An attestation for the previous target
-adds only pending-finality participation. Attestations with the same data signed
-in different rounds are in different aggregates, since an aggregate holds the
-signatures of one round. `compute_on_chain_aggregate` is deprecated.
+adds only pending-finality participation and pays the proposer nothing; a
+proposer should include such aggregates when places are left after the
+aggregates that add target, progress or pending-finality participation for the
+current target. Attestations with the same data signed in different rounds are
+in different aggregates, since an aggregate holds the signatures of one round.
+`compute_on_chain_aggregate` is deprecated.
 
 A proposer should prefer aggregates that add target, progress or
 pending-finality participation.
@@ -1020,9 +1023,9 @@ The validator broadcasts the aggregate and its proof for block inclusion.
 deadlines. Gossip deduplication must use the data, round and signers.
 
 *Note*: A block can include an FG aggregate only while its target is the current
-target of the inclusion state, and only if its round is no later than
-`get_current_round(state)`. Its encoding stays valid for that whole time, since
-the committees depend only on the epoch of the target.
+or the previous target of the inclusion state, and only if its round is no later
+than `get_current_round(state)`. Its encoding stays valid for that whole time,
+since the committees depend only on the epoch of the target.
 
 ### Sync committees
 

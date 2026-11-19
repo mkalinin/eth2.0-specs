@@ -405,6 +405,8 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
         # [New in PQ:EIP8205]
         builder_preregistrations=BuilderPreregistrations(),
         # [New in PQ:EIP8453]
+        previous_target_checkpoint=HeightCheckpoint.empty(),
+        # [New in PQ:EIP8453]
         target_checkpoint=HeightCheckpoint(
             height=Height(1),
             root=hash_tree_root(pre.latest_block_header),
@@ -419,6 +421,8 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
             height=Height(0),
             root=pre.finalized_checkpoint.root,
         ),
+        # [New in PQ:EIP8453]
+        previous_target_slot=Slot(0),
         # [New in PQ:EIP8453]
         target_slot=pre.latest_block_header.slot,
         # [New in PQ:EIP8453]
@@ -435,10 +439,6 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
         head_vote_participation=HeadVoteParticipation(),
         # [New in PQ:EIP8453]
         head_vote_committee_window=HeadVoteCommitteeWindow(),
-        # [New in PQ:EIP8453]
-        previous_target_checkpoint=HeightCheckpoint.empty(),
-        # [New in PQ:EIP8453]
-        previous_target_slot=Slot(0),
     )
 
     # [New in PQ:EIP8453]

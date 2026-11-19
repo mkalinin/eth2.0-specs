@@ -127,6 +127,8 @@ class Seen:
     # [New in PQ:EIP8453]
     attestation_validator_rounds: set[tuple[Round, ValidatorIndex]]
     # [New in PQ:EIP8453]
+    attestation_validator_previous_targets: set[tuple[ValidatorIndex, Root]]
+    # [New in PQ:EIP8453]
     head_vote_validator_slots: dict[tuple[Slot, ValidatorIndex], set[Root]]
 ```
 
@@ -1031,8 +1033,12 @@ The `attestation_{subnet_id}` topics, where each committee index maps to some
 `subnet_id`, are used to propagate FG attestations as `SingleAttestation`. FG
 attestations carry neither a slot nor a block root. Each validator may propagate
 one attestation per round, in the slot of its attestation committee. Only
-attestations for the current target of the head state are propagated, as only
-those can be included.
+attestations for the current target of the head state, and attestations for its
+previous target whose finality pair names a pending justification of the head
+state, are propagated, as only those can be included with an effect. An
+attestation for the previous target uses its own seen key, one per validator and
+previous target, so it does not take the round of the validator's attestation
+for the current target.
 
 There are `ATTESTATION_SUBNET_COUNT_PQ` attestation subnets. `Attnets` keeps its
 length of `ATTESTATION_SUBNET_COUNT` bits, so `MetaData` and the `attnets` ENR
@@ -1069,17 +1075,6 @@ def validate_attestation_gossip(
     if slot is None:
         raise GossipIgnore("no slot of the attestation committee has started")
 
-    # [IGNORE] No other valid attestation seen for this round and validator
-    # (attestations for the previous and the current target share the key)
-    attestation_round_key = (compute_round_at_slot(slot), attester_index)
-    if attestation_round_key in seen.attestation_validator_rounds:
-        raise GossipIgnore("already seen attestation for this round and validator")
-
-    # [New in PQ]
-    # [IGNORE] The attestation is signed at the leaf of the round of its committee's slot
-    if attestation.round != compute_round_at_slot(slot):
-        raise GossipIgnore("attestation round is not the round of its committee's slot")
-
     # [REJECT] The attestation data is well formed
     if not is_well_formed_attestation_data(data):
         raise GossipReject("attestation data is not well formed")
@@ -1108,6 +1103,34 @@ def validate_attestation_gossip(
     if data.target != target and not is_previous_target_attestation_data(state, data):
         raise GossipIgnore("attestation is not for the current or previous target")
 
+    if data.target == target:
+        # [IGNORE] No other valid attestation for the current target seen for
+        # this round and validator
+        seen_key = (compute_round_at_slot(slot), attester_index)
+        if seen_key in seen.attestation_validator_rounds:
+            raise GossipIgnore("already seen attestation for this round and validator")
+        # [New in PQ]
+        # [IGNORE] The attestation is signed at the leaf of the round of its
+        # committee's slot
+        if attestation.round != compute_round_at_slot(slot):
+            raise GossipIgnore("attestation round is not the round of its committee's slot")
+    else:
+        # [IGNORE] The finality pair of an attestation for the previous target
+        # names a pending justification of the head state
+        if not any(pending.checkpoint == data.finality for pending in state.pending_finality):
+            raise GossipIgnore("previous-target attestation has no pending finality pair")
+        # [IGNORE] No other valid attestation for the previous target seen for
+        # this validator; it never takes the round of an attestation for the
+        # current target
+        previous_key = (attester_index, data.target.root)
+        if previous_key in seen.attestation_validator_previous_targets:
+            raise GossipIgnore("already seen previous-target attestation for this validator")
+        # [New in PQ]
+        # [IGNORE] The attestation, cast in an earlier slot, is not signed at
+        # the leaf of a later round
+        if attestation.round > compute_round_at_slot(slot):
+            raise GossipIgnore("attestation round is after the round of its committee's slot")
+
     # [REJECT] The attester is a member of the committee
     # (the head state descends from the target, so it has the committees and
     # signature domain of the target's epoch)
@@ -1129,7 +1152,10 @@ def validate_attestation_gossip(
         raise GossipReject("invalid attestation signature")
 
     # Mark this attestation as seen
-    seen.attestation_validator_rounds.add(attestation_round_key)
+    if data.target == target:
+        seen.attestation_validator_rounds.add(seen_key)
+    else:
+        seen.attestation_validator_previous_targets.add(previous_key)
 ```
 
 #### Sync committee subnets

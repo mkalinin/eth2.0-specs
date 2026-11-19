@@ -149,17 +149,85 @@ def test_non_current_target_is_ignored(spec, state, monkeypatch):
         validate(spec, monkeypatch, store, sign(spec, state, data), head)
 
 
-def test_previous_target_is_accepted(spec, state, monkeypatch):
-    previous = spec.HeightCheckpoint(height=1, root=spec.Root(b"\x05" * 32))
+def with_previous_target(spec, state):
+    """
+    Make the head state's height 3, with previous target height 2 and height 1
+    justified and pending. Return the previous target and the pending pair.
+    """
+    previous = spec.HeightCheckpoint(height=2, root=spec.Root(b"\x05" * 32))
+    pending = spec.HeightCheckpoint(height=1, root=spec.Root(b"\x07" * 32))
     state.previous_target_checkpoint = previous
-    state.target_checkpoint.height = spec.Height(2)
+    state.target_checkpoint.height = spec.Height(3)
+    state.pending_finality = spec.PendingFinalities(
+        data=[
+            spec.PendingFinality(
+                checkpoint=pending,
+                participation=spec.HeightParticipation(
+                    data=[spec.Boolean(value=False)] * len(state.validators)
+                ),
+            )
+        ]
+    )
+    return previous, pending
+
+
+def test_previous_target_with_pending_pair_is_accepted(spec, state, monkeypatch):
+    previous, pending = with_previous_target(spec, state)
     head = spec.Root(b"\x01" * 32)
     store = make_store(spec, head, state)
-    data = spec.AttestationData(target=previous, timeout=False, finality=spec.HeightCheckpoint())
+    data = spec.AttestationData(target=previous, timeout=False, finality=pending)
     seen = validate(spec, monkeypatch, store, sign(spec, state, data), head)
+    assert len(seen.attestation_validator_previous_targets) == 1
+    assert len(seen.attestation_validator_rounds) == 0
+    # A second row for the same previous target is ignored
+    with pytest.raises(spec.GossipIgnore, match="already seen previous-target"):
+        validate(spec, monkeypatch, store, sign(spec, state, data), head, seen=seen)
+
+
+@pytest.mark.parametrize("finality_root", [None, b"\x08"])
+def test_previous_target_without_pending_pair_is_ignored(spec, state, monkeypatch, finality_root):
+    previous, pending = with_previous_target(spec, state)
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    finality = (
+        spec.HeightCheckpoint.empty()
+        if finality_root is None
+        else spec.HeightCheckpoint(height=pending.height, root=spec.Root(finality_root * 32))
+    )
+    data = spec.AttestationData(target=previous, timeout=False, finality=finality)
+    seen = make_seen(spec)
+    with pytest.raises(spec.GossipIgnore, match="no pending finality pair"):
+        validate(spec, monkeypatch, store, sign(spec, state, data), head, seen=seen)
+    assert len(seen.attestation_validator_previous_targets) == 0
+
+
+@pytest.mark.parametrize("previous_first", [True, False])
+def test_previous_and_current_target_rows_keep_separate_keys(
+    spec, state, monkeypatch, previous_first
+):
+    # A replayed previous-target row, cast or rebroadcast in the same round as
+    # the validator's vote for the current target, never takes its round
+    previous, pending = with_previous_target(spec, state)
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    previous_row = sign(
+        spec, state, spec.AttestationData(target=previous, timeout=False, finality=pending)
+    )
+    current_row = sign(spec, state, current_data(spec, state))
+    rows = [previous_row, current_row] if previous_first else [current_row, previous_row]
+    seen = make_seen(spec)
+    for row in rows:
+        validate(spec, monkeypatch, store, row, head, seen=seen)
     assert len(seen.attestation_validator_rounds) == 1
-    # Two heights back is ignored
-    state.previous_target_checkpoint = spec.HeightCheckpoint(height=1, root=spec.Root(b"\x06" * 32))
+    assert len(seen.attestation_validator_previous_targets) == 1
+
+
+def test_two_heights_back_is_ignored(spec, state, monkeypatch):
+    with_previous_target(spec, state)
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    older = spec.HeightCheckpoint(height=1, root=spec.Root(b"\x06" * 32))
+    data = spec.AttestationData(target=older, timeout=False, finality=spec.HeightCheckpoint())
     with pytest.raises(spec.GossipIgnore, match="not for the current or previous target"):
         validate(spec, monkeypatch, store, sign(spec, state, data), head)
 
@@ -326,3 +394,22 @@ def test_pre_fork_duty_is_ignored(spec, monkeypatch, fork_transition):
     )
     with pytest.raises(spec.GossipIgnore, match="no slot of the attestation committee"):
         validate(spec, monkeypatch, store, attestation, head, slot=fork_slot)
+
+
+@pytest.mark.parametrize(("round_offset", "accepted"), [(-1, True), (1, False)])
+def test_previous_target_row_round_is_not_later(spec, state, monkeypatch, round_offset, accepted):
+    # A previous-target row may be relayed after the round it was signed in,
+    # but it is never signed at the leaf of a later round
+    previous, pending = with_previous_target(spec, state)
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    data = spec.AttestationData(target=previous, timeout=False, finality=pending)
+    committee_index = ATTESTER % spec.ATTESTATION_COMMITTEES_PER_ROUND
+    round = committee_round(spec, committee_index, spec.Slot(2 * spec.SLOTS_PER_ROUND))
+    attestation = sign(spec, state, data, round=round + round_offset)
+    if accepted:
+        seen = validate(spec, monkeypatch, store, attestation, head)
+        assert len(seen.attestation_validator_previous_targets) == 1
+    else:
+        with pytest.raises(spec.GossipIgnore, match="round is after the round"):
+            validate(spec, monkeypatch, store, attestation, head)
