@@ -328,15 +328,15 @@ Set `block.body.head_votes` to aggregates from the AC proposal view, up to
 in the previous and current epochs that add seats for the block of their slot,
 since these weigh builder payments.
 
-Set `block.body.head_vote_support` to one `HeadVoteSupportBits` per included
-aggregate, in the same order, with one bit per voter in that aggregate, in the
-order of its `voter_indices`. Set a voter's bit if the proposer counted that
-voter's vote as support in its previous slot head-vote view. A counted vote must
-be of slot `block.slot - 1`, for a block in the accepted tree at proposal time
-whose slot is no later than the vote's slot. Otherwise, clear the bit.
+Set `block.body.head_vote_support` to one bit per included aggregate, in the
+same order. Set an aggregate's bit if the proposer counted its votes as support
+in its previous slot head-vote view. A counted vote must be of slot
+`block.slot - 1`, for a block in the accepted tree at proposal time whose slot
+is no later than the vote's slot. Otherwise, clear the bit.
 
-*Note*: A vote for an unknown block may be included with its support bits
-cleared.
+*Note*: The voters of an aggregate share its data, so the proposer counts all of
+their votes as support or none of them. A vote for an unknown block may be
+included with its support bit cleared.
 
 *TODO*: Specify aggregate selection when the proposal view exceeds
 `MAX_HEAD_VOTES`, preserving the requirements of view merge.
@@ -529,12 +529,21 @@ def get_block_signature(
 A validator on the head vote committee of `slot` creates, signs and broadcasts a
 `HeadVoteMessage` for that slot.
 
-*Note*: In the Goldilocks schedule, head voting occurs one quarter of the way
-through the slot, after unlocking against the previous slot's votes. The
-validator must satisfy the fork choice's observation requirement after waking
-up.
-
-*TODO*: Specify the head-vote deadline and voting helper.
+Every node attempts `get_ac_vote_head(store)` after block, payload and head-vote
+receipts and at `get_head_vote_due_ms()` into the slot, even if none of its
+validators belongs to the head vote committee. A ready current-slot proposal
+allows early preparation; otherwise preparation waits until the deadline.
+Preparation caches one head per slot and unlocks using the frozen local view
+merged with current proposals. When a new prepared head becomes available,
+assigned validators immediately sign, process locally and broadcast their vote
+once. Unselected validators do not sign, self-admit or emit a vote. Repeated
+requests in the same slot return the prepared head without unlocking again. A
+`None` result means no vote is permitted. Nodes must observe continuously from
+the start of the previous slot after startup or restart before proposing,
+preparing votes, confirming or publishing an FG source. Validator signing
+records survive restart, including the record of head votes already signed; a
+validator must never sign two different head votes for one slot. A missing
+`get_ac_proposal` result means the proposal duty is skipped.
 
 #### Head vote data
 
@@ -543,11 +552,10 @@ First, the validator constructs `head_vote_data`, a
 
 - Let `head` be the head selected by the AC voting procedure for `slot`.
 - Set `head_vote_data.slot = slot`.
-- Set `head_vote_data.beacon_block_root = hash_tree_root(head)`.
-- Set `head_vote_data.payload_status` to `PAYLOAD_STATUS_PENDING` if
-  `head.slot == slot`. Otherwise, set it to the payload status of `head`
-  selected by the AC voting procedure, `PAYLOAD_STATUS_FULL` or
-  `PAYLOAD_STATUS_EMPTY`.
+- Set `head_vote_data.beacon_block_root = head.root`.
+- Set `head_vote_data.payload_status = head.payload_status`. The prepared node
+  uses `PAYLOAD_STATUS_PENDING` for a current-slot block, and
+  `PAYLOAD_STATUS_FULL` or `PAYLOAD_STATUS_EMPTY` for an earlier block.
 
 The AC voting procedure applies view merge, AC locks and FG restrictions using
 its voting view.

@@ -127,7 +127,7 @@ class Seen:
     # [New in PQ:EIP8453]
     attestation_validator_rounds: set[tuple[Round, ValidatorIndex]]
     # [New in PQ:EIP8453]
-    head_vote_validator_slots: set[tuple[Slot, ValidatorIndex]]
+    head_vote_validator_slots: dict[tuple[Slot, ValidatorIndex], set[Root]]
 ```
 
 ### Modified `compute_fork_version`
@@ -203,12 +203,6 @@ def verify_block_body_operation_limits(body: BeaconBlockBody) -> None:
     # [REJECT] The head vote support count matches the head vote count
     if len(body.head_vote_support) != len(body.head_votes):
         raise GossipReject("head vote support count does not match head vote count")
-
-    # [New in PQ:EIP8453]
-    # [REJECT] Each head vote has one support bit per voter
-    for index in range(len(body.head_votes)):
-        if len(body.head_vote_support[index]) != len(body.head_votes[index].voter_indices):
-            raise GossipReject("head vote support bits do not match voters")
 ```
 
 ### Modified `verify_execution_requests_limits`
@@ -513,7 +507,14 @@ The validation logic is unchanged. `MAX_ATTESTER_SLASHING_SIZE_PQ` supersedes
 
 ##### New `head_vote`
 
-This topic is used to propagate head votes as `HeadVoteMessage`.
+This topic is used to propagate head votes as `HeadVoteMessage`. Forward at most
+two distinct valid vote data values per validator and slot, so one equivocation
+can propagate. The current/previous-slot window includes
+`MAXIMUM_GOSSIP_CLOCK_DISPARITY` at both boundaries. Up to three slots may be
+retained near a boundary, with at most six data roots per validator. Invalid
+messages do not consume this allowance. Unknown-block queues, if used, must be
+bounded per peer and globally and expire when the vote is no longer admissible;
+clients may drop queued messages under resource pressure.
 
 ```python
 def validate_head_vote_gossip(
@@ -534,14 +535,34 @@ def validate_head_vote_gossip(
     if compute_epoch_at_slot(data.slot) < PQ_FORK_EPOCH:
         raise GossipReject("head vote's slot is pre-pq")
 
-    # [IGNORE] This is the first valid head vote from this validator for the slot
-    head_vote_key = (data.slot, validator_index)
-    if head_vote_key in seen.head_vote_validator_slots:
-        raise GossipIgnore("already seen head vote from this validator for this slot")
+    current_slot = compute_slot_at_time_ms(
+        store.genesis_time_ms, current_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY
+    )
+    previous_slot = saturating_sub(
+        compute_slot_at_time_ms(
+            store.genesis_time_ms,
+            max(
+                store.genesis_time_ms,
+                saturating_sub(current_time_ms, MAXIMUM_GOSSIP_CLOCK_DISPARITY),
+            ),
+        ),
+        1,
+    )
+    seen.head_vote_validator_slots = {
+        key: roots
+        for key, roots in seen.head_vote_validator_slots.items()
+        if previous_slot <= key[0] <= current_slot
+    }
+    # [IGNORE] Only current and previous slot votes are forwarded
+    if not previous_slot <= data.slot <= current_slot:
+        raise GossipIgnore("head vote is not for the current or previous slot")
 
-    # [IGNORE] The head vote is for the current slot
-    if not is_current_slot(store, data.slot, current_time_ms):
-        raise GossipIgnore("head vote is not for the current slot")
+    # [IGNORE] Forward at most two distinct vote data roots per validator and slot
+    head_vote_key = (data.slot, validator_index)
+    data_root = hash_tree_root(data)
+    roots = seen.head_vote_validator_slots.get(head_vote_key, set())
+    if data_root in roots or len(roots) >= 2:
+        raise GossipIgnore("duplicate head vote or two-vote limit reached")
 
     # [IGNORE] The block being voted for has been seen (via gossip or non-gossip sources)
     # (MAY be queued until block is retrieved)
@@ -579,7 +600,7 @@ def validate_head_vote_gossip(
         raise GossipReject("invalid head vote signature")
 
     # Mark this head vote as seen
-    seen.head_vote_validator_slots.add(head_vote_key)
+    seen.head_vote_validator_slots.setdefault(head_vote_key, set()).add(data_root)
 ```
 
 ##### New `head_vote_aggregate`
