@@ -418,10 +418,11 @@ Set `block.body.attestations` to aggregates selected from the FG attestation
 pool, up to `MAX_ATTESTATIONS_PQ`. Each aggregate must satisfy the verification
 conditions in
 [`process_attestation`](./beacon-chain.md#modified-process_attestation),
-including its round and committee encoding. Only attestations for the current
-target of `state` are valid. Attestations with the same data signed in different
-rounds are in different aggregates, since an aggregate holds the signatures of
-one round. `compute_on_chain_aggregate` is deprecated.
+including its round and committee encoding. Only attestations for the current or
+the previous target of `state` are valid. An attestation for the previous target
+adds only pending-finality participation. Attestations with the same data signed
+in different rounds are in different aggregates, since an aggregate holds the
+signatures of one round. `compute_on_chain_aggregate` is deprecated.
 
 A proposer should prefer aggregates that add target, progress or
 pending-finality participation.
@@ -821,7 +822,8 @@ fields:
 - Set `attestation.round` to the round of the assigned slot.
 - Set `attestation.signature` to
   `get_attestation_signature(source_state, attestation_data, epoch, attestation.round, privkey)`,
-  where `epoch = get_attestation_epoch(source_state)`, the epoch of the target.
+  where `epoch = get_attestation_epoch(source_state, attestation_data)`, the
+  epoch of the target.
 
 ```python
 def get_attestation_signature(
@@ -955,7 +957,7 @@ def get_aggregate_attestation(
     for validator_index in participants:
         committee_bits[validator_index % ATTESTATION_COMMITTEES_PER_ROUND] = Boolean(True)
 
-    epoch = get_attestation_epoch(state)
+    epoch = get_attestation_epoch(state, data)
     aggregation_bits = get_attestation_aggregation_bits(state, epoch, committee_bits, participants)
     return Attestation(
         aggregation_bits=aggregation_bits,

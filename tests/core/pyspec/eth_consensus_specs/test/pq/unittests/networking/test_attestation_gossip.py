@@ -93,7 +93,7 @@ def sign(spec, state, data, attester=ATTESTER, committee_index=None, round=None,
     if round is None:
         round = committee_round(spec, committee_index, spec.Slot(slot))
     domain = spec.get_domain(
-        state, spec.DOMAIN_FINALITY_ATTESTER, spec.get_attestation_epoch(state)
+        state, spec.DOMAIN_FINALITY_ATTESTER, spec.get_attestation_epoch(state, data)
     )
     signing_root = spec.compute_signing_root(data, domain)
     leaf_index = spec.compute_xmss_attestation_leaf_index(round)
@@ -145,7 +145,22 @@ def test_non_current_target_is_ignored(spec, state, monkeypatch):
     store = make_store(spec, head, state)
     data = current_data(spec, state)
     data.target.height += 1
-    with pytest.raises(spec.GossipIgnore, match="not for the current target"):
+    with pytest.raises(spec.GossipIgnore, match="not for the current or previous target"):
+        validate(spec, monkeypatch, store, sign(spec, state, data), head)
+
+
+def test_previous_target_is_accepted(spec, state, monkeypatch):
+    previous = spec.HeightCheckpoint(height=1, root=spec.Root(b"\x05" * 32))
+    state.previous_target_checkpoint = previous
+    state.target_checkpoint.height = spec.Height(2)
+    head = spec.Root(b"\x01" * 32)
+    store = make_store(spec, head, state)
+    data = spec.AttestationData(target=previous, timeout=False, finality=spec.HeightCheckpoint())
+    seen = validate(spec, monkeypatch, store, sign(spec, state, data), head)
+    assert len(seen.attestation_validator_rounds) == 1
+    # Two heights back is ignored
+    state.previous_target_checkpoint = spec.HeightCheckpoint(height=1, root=spec.Root(b"\x06" * 32))
+    with pytest.raises(spec.GossipIgnore, match="not for the current or previous target"):
         validate(spec, monkeypatch, store, sign(spec, state, data), head)
 
 
@@ -159,7 +174,7 @@ def test_head_on_branch_split_before_target_is_ignored(spec, state, monkeypatch)
     branch.validators[ATTESTER].exit_epoch = spec.Epoch(0)
     head = spec.Root(b"\x03" * 32)
     store = make_store(spec, head, branch)
-    with pytest.raises(spec.GossipIgnore, match="not for the current target"):
+    with pytest.raises(spec.GossipIgnore, match="not for the current or previous target"):
         validate(spec, monkeypatch, store, attestation, head)
 
 
@@ -215,7 +230,7 @@ def test_stale_row_does_not_take_the_round(spec, state, monkeypatch):
     stale.target.height -= 1
     stale.target.root = spec.Root(b"\x04" * 32)
     seen = make_seen(spec)
-    with pytest.raises(spec.GossipIgnore, match="not for the current target"):
+    with pytest.raises(spec.GossipIgnore, match="not for the current or previous target"):
         validate(spec, monkeypatch, store, sign(spec, state, stale), head, seen=seen)
     assert len(seen.attestation_validator_rounds) == 0
     validate(

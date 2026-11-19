@@ -113,6 +113,7 @@
     - [Modified `is_valid_indexed_attestation`](#modified-is_valid_indexed_attestation)
     - [New `is_well_formed_attestation_data`](#new-is_well_formed_attestation_data)
     - [New `is_valid_attestation_data`](#new-is_valid_attestation_data)
+    - [New `is_previous_target_attestation_data`](#new-is_previous_target_attestation_data)
     - [New `is_double_target_vote`](#new-is_double_target_vote)
     - [New `is_conflicting_with_finality_pair`](#new-is_conflicting_with_finality_pair)
     - [Modified `is_slashable_attestation_data`](#modified-is_slashable_attestation_data)
@@ -847,7 +848,7 @@ keeps its name but moves to a new position.
 
 ```python
 class BeaconState(ProgressiveContainer):
-    ACTIVE_FIELDS = active_fields(width=61, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
+    ACTIVE_FIELDS = active_fields(width=63, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
 
     genesis_time: Uint64
     genesis_validators_root: Root
@@ -933,6 +934,10 @@ class BeaconState(ProgressiveContainer):
     head_vote_participation: HeadVoteParticipation
     # [New in PQ:EIP8453]
     head_vote_committee_window: HeadVoteCommitteeWindow
+    # [New in PQ:EIP8453]
+    previous_target_checkpoint: HeightCheckpoint
+    # [New in PQ:EIP8453]
+    previous_target_slot: Slot
 ```
 
 #### `Builder`
@@ -1627,11 +1632,25 @@ def is_well_formed_attestation_data(data: AttestationData) -> bool:
 ```python
 def is_valid_attestation_data(state: BeaconState, data: AttestationData) -> bool:
     """
-    Check if ``data`` names the target checkpoint of ``state``.
+    Check if ``data`` names the current or the previous target checkpoint of
+    ``state``.
     """
     # [Modified in PQ:EIP8453]
-    # Only votes for the current target are included
-    return data.target == state.target_checkpoint
+    # Only votes for the current or the previous target are included
+    return data.target == state.target_checkpoint or is_previous_target_attestation_data(
+        state, data
+    )
+```
+
+#### New `is_previous_target_attestation_data`
+
+```python
+def is_previous_target_attestation_data(state: BeaconState, data: AttestationData) -> bool:
+    """
+    Check if ``data`` names the previous target checkpoint of ``state``.
+    """
+    previous_target = state.previous_target_checkpoint
+    return previous_target.height > 0 and data.target == previous_target
 ```
 
 #### New `is_double_target_vote`
@@ -1840,7 +1859,9 @@ def get_attesting_indices(state: BeaconState, attestation: Attestation) -> set[V
     and ``committee_bits``.
     """
     # [Modified in PQ:EIP8453]
-    return get_aggregate_participants(state, get_attestation_epoch(state), attestation)
+    return get_aggregate_participants(
+        state, get_attestation_epoch(state, attestation.data), attestation
+    )
 ```
 
 #### Modified `get_indexed_attestation`
@@ -1864,7 +1885,7 @@ def get_indexed_attestation(
         # [Modified in PQ]
         proof=proof,
         # [New in PQ:EIP8453]
-        epoch=get_attestation_epoch(state),
+        epoch=get_attestation_epoch(state, attestation.data),
         # [New in PQ]
         round=attestation.round,
     )
@@ -1888,7 +1909,7 @@ def get_attestation_statements(
     signatures of its attesters in that committee prove.
     """
     # [Modified in PQ:EIP8453]
-    epoch = get_attestation_epoch(state)
+    epoch = get_attestation_epoch(state, attestation.data)
     domain = get_domain(state, DOMAIN_FINALITY_ATTESTER, epoch)
     message = compute_signing_root(attestation.data, domain)
     leaf_index = compute_xmss_attestation_leaf_index(attestation.round)
@@ -2050,18 +2071,22 @@ def get_attestation_committee(
 
 #### New `get_attestation_epoch`
 
-*Note*: Attestations are included only while their target is the current target
-of the chain, and every chain on which that holds contains the target block. So
-the committees of this epoch, and the signature domain, are the same on every
-chain that can include an attestation, and an aggregate has one encoding on all
-of them.
+*Note*: Attestations are included only while their target is the current or the
+previous target of the chain, and every chain on which that holds contains the
+target block. So the committees of the target's epoch, and the signature domain,
+are the same on every chain that can include an attestation, and an aggregate
+has one encoding on all of them. The committees of an earlier epoch read from a
+later state are the same, since eligibility and exit epochs are only ever set to
+later epochs.
 
 ```python
-def get_attestation_epoch(state: BeaconState) -> Epoch:
+def get_attestation_epoch(state: BeaconState, data: AttestationData) -> Epoch:
     """
-    Return the epoch of the committees and the signature domain of the
-    attestations included in ``state``, the epoch of its target.
+    Return the epoch of the committees and the signature domain of an
+    attestation with ``data`` included in ``state``, the epoch of its target.
     """
+    if is_previous_target_attestation_data(state, data):
+        return compute_epoch_at_slot(state.previous_target_slot)
     return compute_epoch_at_slot(state.target_slot)
 ```
 
@@ -2975,11 +3000,13 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
 *Note*: The function `process_attestation` is rewritten for the finality gadget.
 Flags are credited only the first time a validator's progress or finality
 participation is recorded, and count toward the round in which the attestation
-is included. Only attestations for the current target are included, and only
-signers that are active are counted. An attestation carries no signature, so
-`process_stark` verifies the signatures of all attestations in the block
-instead. Its `round` only selects the XMSS leaf of those signatures, which
-cannot be of a future round.
+is included. Only attestations for the current or the previous target are
+included, and only signers that are active are counted. An attestation for the
+previous target counts only toward the participation of the pending
+justification its finality pair names, and credits no flag or reward. An
+attestation carries no signature, so `process_stark` verifies the signatures of
+all attestations in the block instead. Its `round` only selects the XMSS leaf of
+those signatures, which cannot be of a future round.
 
 ```python
 def process_attestation(state: BeaconState, attestation: Attestation) -> None:
@@ -2990,12 +3017,19 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
     # [New in PQ]
     # The XMSS leaf is not of a future round
     assert attestation.round <= get_current_round(state)
-    assert is_valid_aggregation_bits(state, get_attestation_epoch(state), attestation)
+    assert is_valid_aggregation_bits(state, get_attestation_epoch(state, data), attestation)
 
     proposer_reward_numerator = 0
     for index in get_attesting_indices(state, attestation):
         # Signers that are not active are verified but not counted
         if not is_active_validator(state.validators[index], get_current_epoch(state)):
+            continue
+        # A vote for the previous target counts only for a pending
+        # justification, without flags or rewards
+        if is_previous_target_attestation_data(state, data):
+            for pending in state.pending_finality:
+                if pending.checkpoint == data.finality:
+                    pending.participation[index] = Boolean(True)
             continue
         base_reward = get_round_base_reward(state, index)
         for pending in state.pending_finality:
@@ -3706,6 +3740,8 @@ def process_height_events(state: BeaconState) -> None:
 
 ```python
 def advance_height(state: BeaconState) -> None:
+    state.previous_target_checkpoint = state.target_checkpoint
+    state.previous_target_slot = state.target_slot
     state.target_checkpoint = HeightCheckpoint(
         height=state.target_checkpoint.height + 1,
         # Filled in by the next ``process_slot``

@@ -1070,6 +1070,7 @@ def validate_attestation_gossip(
         raise GossipIgnore("no slot of the attestation committee has started")
 
     # [IGNORE] No other valid attestation seen for this round and validator
+    # (attestations for the previous and the current target share the key)
     attestation_round_key = (compute_round_at_slot(slot), attester_index)
     if attestation_round_key in seen.attestation_validator_rounds:
         raise GossipIgnore("already seen attestation for this round and validator")
@@ -1102,15 +1103,15 @@ def validate_attestation_gossip(
         # The head block is the target of the head state's height
         target.root = head.root
 
-    # [IGNORE] The attestation is for the current target of the head state
-    # (MAY be queued until the target block is retrieved)
-    if data.target != target:
-        raise GossipIgnore("attestation is not for the current target")
+    # [IGNORE] The attestation is for the current or the previous target of the
+    # head state (MAY be queued until the target block is retrieved)
+    if data.target != target and not is_previous_target_attestation_data(state, data):
+        raise GossipIgnore("attestation is not for the current or previous target")
 
     # [REJECT] The attester is a member of the committee
     # (the head state descends from the target, so it has the committees and
     # signature domain of the target's epoch)
-    epoch = get_attestation_epoch(state)
+    epoch = get_attestation_epoch(state, data)
     committee = get_attestation_committee(state, epoch, committee_index)
     if attester_index not in committee:
         raise GossipReject("attester is not a member of the committee")

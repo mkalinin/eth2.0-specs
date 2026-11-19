@@ -148,7 +148,7 @@ def test_pending_finality_retains_two_newest_justifications(spec):
 
 def full_attestation(spec, state, data):
     """An aggregate of every attestation committee member for ``data``."""
-    epoch = spec.get_attestation_epoch(state)
+    epoch = spec.get_attestation_epoch(state, data)
     committee_bits = spec.AttestationCommitteeBits()
     size = 0
     for index in range(spec.ATTESTATION_COMMITTEES_PER_ROUND):
@@ -200,19 +200,15 @@ def test_one_block_finalizes_predecessor_and_justifies_height(spec, monkeypatch)
     assert state.target_checkpoint.height == 3
 
 
-@pytest.mark.parametrize(
-    ("withheld", "expected"),
-    [
-        # height, justified height, finalized height after 68 slots
-        (0, (23, 22, 21)),
-        # A quarter of the validators sign no finality pair: the target quorum
-        # waits for the finality quorum of its predecessor at each height
-        (16, (18, 17, 16)),
-    ],
-)
-def test_gate_and_client_finalize_over_many_heights(spec, monkeypatch, withheld, expected):
-    if spec.config.PRESET_BASE != "minimal":
-        pytest.skip("the expected heights are for the minimal schedule")
+def run_heights(spec, monkeypatch, withheld, delay, keep_previous):
+    """
+    Run 68 minimal slots of real blocks in which every validator votes in its
+    duty slot with the FG client, the first ``withheld`` validators sign no
+    finality pair, and votes reach the pool ``delay`` slots after they are
+    cast. Proposers include every pooled vote the state accepts; with
+    ``keep_previous`` the pool also keeps votes for the previous target.
+    Return the height, justified height and finalized height at the end.
+    """
     monkeypatch.setattr(spec, "config", spec.config._replace(PQ_FORK_EPOCH=spec.Epoch(0)))
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
     monkeypatch.setattr(spec.stark, "VerifyAggregates", lambda statements, proof: True)
@@ -232,14 +228,15 @@ def test_gate_and_client_finalize_over_many_heights(spec, monkeypatch, withheld,
         for v in range(count)
     }
     pool = []
+    in_flight = []
     for slot in range(1, 69):
-        # Include the pooled votes for the current target
+        # Include the pooled votes that the block's state accepts
         pre_state = state.copy()
         spec.process_slots(pre_state, spec.Slot(slot))
         block = build_empty_block(spec, state, spec.Slot(slot))
         groups = {}
         for attestation in pool:
-            if attestation.data.target == pre_state.target_checkpoint:
+            if spec.is_valid_attestation_data(pre_state, attestation.data):
                 groups.setdefault(
                     (spec.hash_tree_root(attestation.data), attestation.round), []
                 ).append(attestation)
@@ -271,10 +268,37 @@ def test_gate_and_client_finalize_over_many_heights(spec, monkeypatch, withheld,
                     committee_index=index, attester_index=v, data=data, round=current_round
                 )
             )
-        pool = [a for a in pool if a.data.target.height >= state.target_checkpoint.height] + new
+        in_flight.append((slot + delay, new))
+        arrived = [a for due, batch in in_flight if due <= slot for a in batch]
+        in_flight = [(due, batch) for due, batch in in_flight if due > slot]
+        lowest = state.target_checkpoint.height - (1 if keep_previous else 0)
+        pool = [a for a in pool + arrived if a.data.target.height >= lowest]
 
-    assert (
+    return (
         state.target_checkpoint.height,
         state.justified_checkpoint.height,
         state.finalized_checkpoint.height,
-    ) == expected
+    )
+
+
+@pytest.mark.parametrize(
+    ("withheld", "delay", "keep_previous", "expected"),
+    [
+        # height, justified height, finalized height after 68 slots
+        (0, 0, False, (23, 22, 21)),
+        # A quarter of the validators sign no finality pair: the target quorum
+        # waits for the finality quorum of its predecessor at each height
+        (16, 0, False, (18, 17, 16)),
+        # Votes arrive one slot late: the last finality votes of a height
+        # land after it is justified, and count only as votes for the
+        # previous target
+        (16, 1, False, (17, 15, 0)),
+        (16, 1, True, (17, 15, 15)),
+    ],
+)
+def test_gate_and_client_finalize_over_many_heights(
+    spec, monkeypatch, withheld, delay, keep_previous, expected
+):
+    if spec.config.PRESET_BASE != "minimal":
+        pytest.skip("the expected heights are for the minimal schedule")
+    assert run_heights(spec, monkeypatch, withheld, delay, keep_previous) == expected

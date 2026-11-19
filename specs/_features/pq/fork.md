@@ -435,6 +435,10 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
         head_vote_participation=HeadVoteParticipation(),
         # [New in PQ:EIP8453]
         head_vote_committee_window=HeadVoteCommitteeWindow(),
+        # [New in PQ:EIP8453]
+        previous_target_checkpoint=HeightCheckpoint.empty(),
+        # [New in PQ:EIP8453]
+        previous_target_slot=Slot(0),
     )
 
     # [New in PQ:EIP8453]
