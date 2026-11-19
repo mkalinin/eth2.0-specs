@@ -5,8 +5,11 @@ from importlib import import_module
 import pytest
 
 from eth_consensus_specs.test import context
+from eth_consensus_specs.test.helpers.block import build_empty_block
+from eth_consensus_specs.test.helpers.constants import EIP8483, PREVIOUS_FORK_OF
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
 from eth_consensus_specs.test.helpers.pq.fork import upgrade_registered_to_pq
+from eth_consensus_specs.test.helpers.state import state_transition_and_sign_block
 
 pytestmark = pytest.mark.usefixtures("fake_xmss")
 
@@ -87,6 +90,22 @@ def test_blocked_quorum_falls_through_to_timeout(spec):
     assert state.target_checkpoint.height == 4
 
 
+def test_predecessor_finalized_in_the_same_event_opens_the_gate(spec):
+    # Height 2 is justified and not finalized when the event starts; its
+    # finality quorum, the target quorum of height 3 and the timeout all hold
+    state = state_at(spec, 3, 2, 1, slot_offset=spec.TIMEOUT_DELAY_SLOTS)
+    state.pending_finality[0].participation = spec.HeightParticipation(
+        data=[spec.Boolean(value=True)] * len(state.validators)
+    )
+    spec.process_height_events(state)
+    # Finalizing 2 first lets 3 justify; with the finality of the block entry
+    # the quorum would be blocked and the height would only time out
+    assert state.finalized_checkpoint == checkpoint(spec, 2, 2)
+    assert state.justified_checkpoint == checkpoint(spec, 3, 3)
+    assert [p.checkpoint for p in state.pending_finality] == [checkpoint(spec, 3, 3)]
+    assert state.target_checkpoint.height == 4
+
+
 def test_pending_finality_retains_two_newest_justifications(spec):
     state = spec.BeaconState()
     state.validators.append(
@@ -125,3 +144,137 @@ def test_pending_finality_retains_two_newest_justifications(spec):
     spec.process_height_events(state)
     assert [int(item.checkpoint.height) for item in state.pending_finality] == [5, 7]
     assert state.finalized_checkpoint.height == 3
+
+
+def full_attestation(spec, state, data):
+    """An aggregate of every attestation committee member for ``data``."""
+    epoch = spec.get_attestation_epoch(state)
+    committee_bits = spec.AttestationCommitteeBits()
+    size = 0
+    for index in range(spec.ATTESTATION_COMMITTEES_PER_ROUND):
+        members = len(spec.get_attestation_committee(state, epoch, spec.CommitteeIndex(index)))
+        if members > 0:
+            committee_bits[index] = True
+            size += members
+    return spec.Attestation(
+        aggregation_bits=spec.AggregationBits(data=[True] * size),
+        data=data,
+        committee_bits=committee_bits,
+    )
+
+
+def test_one_block_finalizes_predecessor_and_justifies_height(spec, monkeypatch):
+    monkeypatch.setattr(spec, "config", spec.config._replace(PQ_FORK_EPOCH=spec.Epoch(0)))
+    monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
+    monkeypatch.setattr(spec.stark, "VerifyAggregates", lambda statements, proof: True)
+    eip8483 = import_module(f"eth_consensus_specs.eip8483.{context.DEFAULT_TEST_PRESET}")
+    pre = create_genesis_state(
+        eip8483, [eip8483.MAX_EFFECTIVE_BALANCE] * 64, eip8483.MAX_EFFECTIVE_BALANCE
+    )
+    state = upgrade_registered_to_pq(spec, pre)
+    record = spec.FinalitySigningRecord(
+        targets={}, timeouts={}, finality_locks={}, entries={}, rounds=set()
+    )
+
+    def apply_block_with_client_votes(slot, entry_state):
+        spec.process_slots(state, spec.Slot(slot))
+        data = spec.get_finality_attestation_data(record, state.target_checkpoint, entry_state)
+        block = build_empty_block(spec, state, spec.Slot(slot))
+        block.body.attestations.append(full_attestation(spec, state, data))
+        spec.process_block(state, block)
+        return data
+
+    # Height 1 justifies; its block is the target of height 2
+    data = apply_block_with_client_votes(1, state.copy())
+    assert data.finality == spec.HeightCheckpoint.empty()
+    assert state.justified_checkpoint.height == 1
+    assert state.finalized_checkpoint.height == 0
+    entry_state = state.copy()
+
+    # The votes for height 2 carry the justified predecessor as finality pair;
+    # the block that includes them finalizes 1 and justifies 2 at once
+    data = apply_block_with_client_votes(2, entry_state)
+    assert data.finality == entry_state.justified_checkpoint
+    assert state.finalized_checkpoint == entry_state.justified_checkpoint
+    assert state.justified_checkpoint == data.target
+    assert state.target_checkpoint.height == 3
+
+
+@pytest.mark.parametrize(
+    ("withheld", "expected"),
+    [
+        # height, justified height, finalized height after 68 slots
+        (0, (23, 22, 21)),
+        # A quarter of the validators sign no finality pair: the target quorum
+        # waits for the finality quorum of its predecessor at each height
+        (16, (18, 17, 16)),
+    ],
+)
+def test_gate_and_client_finalize_over_many_heights(spec, monkeypatch, withheld, expected):
+    if spec.config.PRESET_BASE != "minimal":
+        pytest.skip("the expected heights are for the minimal schedule")
+    monkeypatch.setattr(spec, "config", spec.config._replace(PQ_FORK_EPOCH=spec.Epoch(0)))
+    monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
+    monkeypatch.setattr(spec.stark, "VerifyAggregates", lambda statements, proof: True)
+    eip8483 = import_module(f"eth_consensus_specs.eip8483.{context.DEFAULT_TEST_PRESET}")
+    pre = create_genesis_state(
+        eip8483, [eip8483.MAX_EFFECTIVE_BALANCE] * 64, eip8483.MAX_EFFECTIVE_BALANCE
+    )
+    state = upgrade_registered_to_pq(spec, pre)
+    count = len(state.validators)
+    # The post-state of each block, keyed by block root; the upgraded genesis
+    # state is the entry state of height 1
+    entry_states = {state.target_checkpoint.root: state.copy()}
+    records = {
+        v: spec.FinalitySigningRecord(
+            targets={}, timeouts={}, finality_locks={}, entries={}, rounds=set()
+        )
+        for v in range(count)
+    }
+    pool = []
+    for slot in range(1, 69):
+        # Include the pooled votes for the current target
+        pre_state = state.copy()
+        spec.process_slots(pre_state, spec.Slot(slot))
+        block = build_empty_block(spec, state, spec.Slot(slot))
+        groups = {}
+        for attestation in pool:
+            if attestation.data.target == pre_state.target_checkpoint:
+                groups.setdefault(
+                    (spec.hash_tree_root(attestation.data), attestation.round), []
+                ).append(attestation)
+        for group in groups.values():
+            block.body.attestations.append(spec.get_aggregate_attestation(pre_state, group))
+        signed = state_transition_and_sign_block(spec, state, block)
+        root = signed.message.hash_tree_root()
+        entry_states[root] = state.copy()
+
+        # Validators with a duty in this slot vote from the new block
+        target = state.target_checkpoint.copy()
+        if target.root == spec.Root():
+            target.root = root
+        entry = entry_states[target.root]
+        current_round = spec.compute_round_at_slot(spec.Slot(slot))
+        new = []
+        for v in range(count):
+            index = spec.CommitteeIndex(v % spec.ATTESTATION_COMMITTEES_PER_ROUND)
+            if spec.compute_attestation_committee_slot(current_round, index) != slot:
+                continue
+            data = spec.get_finality_attestation_data(records[v], target, entry)
+            if data is None:
+                continue
+            if v < withheld:
+                data.finality = spec.HeightCheckpoint.empty()
+            spec.record_finality_attestation(records[v], data, current_round)
+            new.append(
+                spec.SingleAttestation(
+                    committee_index=index, attester_index=v, data=data, round=current_round
+                )
+            )
+        pool = [a for a in pool if a.data.target.height >= state.target_checkpoint.height] + new
+
+    assert (
+        state.target_checkpoint.height,
+        state.justified_checkpoint.height,
+        state.finalized_checkpoint.height,
+    ) == expected

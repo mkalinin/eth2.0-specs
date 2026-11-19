@@ -235,8 +235,11 @@ target. An attestation is a target vote or a timeout for a height, with an
 optional finality pair naming a justification not yet finalized. A quorum of
 target votes justifies the target and opens the next height. A quorum of target
 votes and timeouts also opens the next height, but only `TIMEOUT_DELAY_SLOTS`
-slots after the target. A quorum of finality pairs finalizes a pending
-justification.
+slots after the target. A target quorum justifies only if the previous height is
+not justified or is already finalized. A quorum of finality pairs finalizes a
+pending justification, before the same block checks the target quorum.
+Validators read the finality pair from the state in which the chain entered the
+height.
 
 In every slot, a head vote committee of `HEAD_VOTE_COMMITTEE_SIZE` validators,
 sampled by effective balance, casts head votes. A block carries head votes and

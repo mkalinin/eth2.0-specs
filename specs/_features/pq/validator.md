@@ -684,12 +684,16 @@ Let `source_state` be the state after processing `source`:
 If `target.root == Root()` because `source` advanced the height, set
 `target.root = source.root`.
 
-Let `entry_state` be the state after processing the block `target.root`, the
-state in which the chain of `source` entered the height of `target`.
+Let `entry_state = get_block_state(store, target.root)`, the state after
+processing the block `target.root`, in which the chain of `source` entered the
+height of `target`. At height 1 the target is the last block before the fork,
+whose stored state is an EIP-8483 state that `get_block_state` reads through the
+upgrade.
 
 *Note*: Both the height pair and the finality pair come from the chain of the
-source. The finality pair is read from `entry_state`, so it does not change
-while the source stays at the same height.
+source. The candidate finality pairs are read from `entry_state`, so they do not
+change while the source stays at the same height; which candidate is offered
+still depends on the signing record.
 
 ##### Finality pair
 
@@ -761,6 +765,7 @@ new finality pair.
 def get_finality_attestation_data(
     record: FinalitySigningRecord, target: HeightCheckpoint, entry_state: BeaconState
 ) -> AttestationData | None:
+    assert entry_state.target_checkpoint.height == target.height
     vote = get_height_vote(record, target)
     if vote is None:
         return None

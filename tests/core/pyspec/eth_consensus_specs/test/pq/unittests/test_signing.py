@@ -160,3 +160,8 @@ def test_second_attestation_in_a_round_is_refused(spec, record):
         spec.record_finality_attestation(record, other, spec.Round(3))
     spec.record_finality_attestation(record, other, spec.Round(4))
     assert record.rounds == {spec.Round(3), spec.Round(4)}
+
+
+def test_entry_state_must_be_at_target_height(spec, record):
+    with pytest.raises(AssertionError):
+        spec.get_finality_attestation_data(record, checkpoint(spec, 2, 1), entry_state(spec, 1))
