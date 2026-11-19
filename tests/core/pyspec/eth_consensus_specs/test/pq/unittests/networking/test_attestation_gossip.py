@@ -9,7 +9,10 @@ import pytest
 from eth_consensus_specs.test import context
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
 from eth_consensus_specs.test.helpers.keys import privkeys
-from eth_consensus_specs.test.helpers.pq.fork import register_xmss_pubkeys
+from eth_consensus_specs.test.helpers.pq.fork import (
+    register_xmss_pubkeys,
+    upgrade_registered_to_pq,
+)
 
 ATTESTER = 1
 
@@ -21,13 +24,21 @@ def spec(preset):
     return import_module(f"eth_consensus_specs.pq.{context.DEFAULT_TEST_PRESET}")
 
 
+def set_fork_epoch(spec, monkeypatch, epoch):
+    monkeypatch.setattr(spec, "config", spec.config._replace(PQ_FORK_EPOCH=spec.Epoch(epoch)))
+
+
+@pytest.fixture(autouse=True)
+def fork_at_genesis(spec, monkeypatch):
+    set_fork_epoch(spec, monkeypatch, 0)
+
+
 @pytest.fixture
 def state(spec):
     eip8483 = import_module(f"eth_consensus_specs.eip8483.{context.DEFAULT_TEST_PRESET}")
     balances = [eip8483.MAX_EFFECTIVE_BALANCE] * 64
     pre = create_genesis_state(eip8483, balances, eip8483.MAX_EFFECTIVE_BALANCE)
-    register_xmss_pubkeys(eip8483, pre)
-    state = spec.upgrade_to_pq(pre)
+    state = upgrade_registered_to_pq(spec, pre)
     spec.process_slots(state, state.slot + 1)
     return state
 
@@ -74,11 +85,13 @@ def committee_round(spec, committee_index, slot):
     return spec.Round(round)
 
 
-def sign(spec, state, data, attester=ATTESTER, committee_index=None, round=None):
+def sign(spec, state, data, attester=ATTESTER, committee_index=None, round=None, slot=None):
     if committee_index is None:
         committee_index = attester % spec.ATTESTATION_COMMITTEES_PER_ROUND
+    if slot is None:
+        slot = 2 * spec.SLOTS_PER_ROUND
     if round is None:
-        round = committee_round(spec, committee_index, spec.Slot(2 * spec.SLOTS_PER_ROUND))
+        round = committee_round(spec, committee_index, spec.Slot(slot))
     domain = spec.get_domain(
         state, spec.DOMAIN_FINALITY_ATTESTER, spec.get_attestation_epoch(state)
     )
@@ -171,6 +184,7 @@ def test_target_height_must_match_target_block(spec, state, monkeypatch):
 
 
 def test_target_block_that_opened_no_height_is_rejected(spec, state, monkeypatch):
+    state.target_checkpoint.height = spec.Height(2)
     head = spec.Root(b"\x01" * 32)
     store = make_store(spec, head, state)
     # The target block's own state has a filled-in target, so it opened no height
@@ -182,15 +196,13 @@ def test_target_block_that_opened_no_height_is_rejected(spec, state, monkeypatch
 def test_first_round_before_committee_slot_is_ignored(spec, state, monkeypatch):
     head = spec.Root(b"\x01" * 32)
     store = make_store(spec, head, state)
-    attester = next(
+    committee_index = next(
         index
-        for index in range(len(state.validators))
-        if spec.compute_attestation_committee_slot(
-            spec.GENESIS_ROUND, index % spec.ATTESTATION_COMMITTEES_PER_ROUND
-        )
-        > spec.GENESIS_SLOT
+        for index in range(spec.ATTESTATION_COMMITTEES_PER_ROUND)
+        if spec.compute_attestation_committee_slot(spec.GENESIS_ROUND, index) > spec.GENESIS_SLOT
     )
-    attestation = sign(spec, state, current_data(spec, state), attester=attester)
+    # Timing is checked before signer membership, independently of registry size.
+    attestation = sign(spec, state, current_data(spec, state), committee_index=committee_index)
     with pytest.raises(spec.GossipIgnore, match="no slot of the attestation committee"):
         validate(spec, monkeypatch, store, attestation, head, slot=spec.GENESIS_SLOT)
 
@@ -230,3 +242,72 @@ def test_signature_at_another_leaf_is_rejected(spec, state, monkeypatch):
     attestation.signature = other.signature
     with pytest.raises(spec.GossipReject, match="invalid attestation signature"):
         validate(spec, monkeypatch, store, attestation, head)
+
+
+@pytest.fixture
+def fork_transition(spec, monkeypatch):
+    # The fork activates at epoch 1; the genesis block is the last Heze block
+    set_fork_epoch(spec, monkeypatch, 1)
+    eip8483 = import_module(f"eth_consensus_specs.eip8483.{context.DEFAULT_TEST_PRESET}")
+    balances = [eip8483.MAX_EFFECTIVE_BALANCE] * 64
+    heze_state = create_genesis_state(eip8483, balances, eip8483.MAX_EFFECTIVE_BALANCE)
+    # The pre-fork states that gossip upgrades carry the registrations
+    register_xmss_pubkeys(eip8483, heze_state)
+    fork_slot = spec.compute_start_slot_at_epoch(spec.Epoch(1))
+    pre = heze_state.copy()
+    eip8483.process_slots(pre, fork_slot)
+    heze_root = pre.latest_block_header.hash_tree_root()
+    upgraded = upgrade_registered_to_pq(spec, pre)
+    assert upgraded.target_checkpoint == spec.HeightCheckpoint(height=1, root=heze_root)
+    return heze_state, heze_root, upgraded, fork_slot
+
+
+def add_block(spec, store, root, slot, block_state):
+    store.blocks[root] = spec.BeaconBlock(slot=slot)
+    store.block_states[root] = block_state
+
+
+def test_height_one_with_pre_fork_head_is_accepted(spec, monkeypatch, fork_transition):
+    heze_state, heze_root, upgraded, fork_slot = fork_transition
+    store = make_store(spec, heze_root, heze_state)
+    store.blocks[heze_root] = spec.BeaconBlock(slot=heze_state.slot)
+    data = current_data(spec, upgraded)
+    slot = fork_slot + 2 * spec.SLOTS_PER_ROUND
+    attestation = sign(spec, upgraded, data, slot=slot)
+    seen = validate(spec, monkeypatch, store, attestation, heze_root, slot=slot)
+    assert len(seen.attestation_validator_rounds) == 1
+
+
+def test_height_one_with_post_fork_head(spec, monkeypatch, fork_transition):
+    heze_state, heze_root, upgraded, fork_slot = fork_transition
+    head_state = upgraded.copy()
+    spec.process_slots(head_state, fork_slot + 1)
+    head = spec.Root(b"\x05" * 32)
+    store = make_store(spec, head, head_state)
+    add_block(spec, store, heze_root, heze_state.slot, heze_state)
+    slot = fork_slot + 2 * spec.SLOTS_PER_ROUND
+    data = current_data(spec, head_state)
+    validate(spec, monkeypatch, store, sign(spec, head_state, data, slot=slot), head, slot=slot)
+    # A pre-fork block is the target of height 1 only
+    data.target.height = spec.Height(2)
+    with pytest.raises(spec.GossipReject, match="did not open the target height"):
+        validate(spec, monkeypatch, store, sign(spec, head_state, data, slot=slot), head, slot=slot)
+
+
+def test_pre_fork_duty_is_ignored(spec, monkeypatch, fork_transition):
+    _, _, upgraded, fork_slot = fork_transition
+    head_state = upgraded.copy()
+    spec.process_slots(head_state, fork_slot + 1)
+    head = spec.Root(b"\x05" * 32)
+    store = make_store(spec, head, head_state)
+    round = spec.compute_round_at_slot(fork_slot)
+    committee_index = next(
+        index
+        for index in range(spec.ATTESTATION_COMMITTEES_PER_ROUND)
+        if spec.compute_attestation_committee_slot(round, index) > fork_slot
+    )
+    attestation = sign(
+        spec, head_state, current_data(spec, head_state), committee_index=committee_index
+    )
+    with pytest.raises(spec.GossipIgnore, match="no slot of the attestation committee"):
+        validate(spec, monkeypatch, store, attestation, head, slot=fork_slot)

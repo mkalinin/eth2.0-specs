@@ -24,6 +24,9 @@
   - [New `get_deepest_node`](#new-get_deepest_node)
   - [New `is_compatible`](#new-is_compatible)
   - [New `get_subtree`](#new-get_subtree)
+  - [New `get_upgraded_state`](#new-get_upgraded_state)
+  - [New `get_block_state`](#new-get_block_state)
+  - [New `get_block_pre_state`](#new-get_block_pre_state)
   - [New `get_pulled_up_state`](#new-get_pulled_up_state)
   - [Finality gadget](#finality-gadget)
     - [New `FGFrame`](#new-fgframe)
@@ -42,6 +45,7 @@
     - [New `get_local_view_from_p2p_messages`](#new-get_local_view_from_p2p_messages)
     - [New `get_view_from_blocks`](#new-get_view_from_blocks)
     - [New `get_local_view_from_blocks`](#new-get_local_view_from_blocks)
+    - [New `is_usable_proposer_support`](#new-is_usable_proposer_support)
     - [New `get_proposer_view`](#new-get_proposer_view)
     - [New `compute_merged_view`](#new-compute_merged_view)
     - [New `get_combined_local_view`](#new-get_combined_local_view)
@@ -71,6 +75,7 @@
     - [New `record_head_vote_message`](#new-record_head_vote_message)
   - [`on_tick` helpers](#on_tick-helpers)
     - [New `update_confirmation`](#new-update_confirmation)
+    - [New `update_optimistic_confirmation`](#new-update_optimistic_confirmation)
     - [New `unlock`](#new-unlock)
   - [`on_head_vote_message` helpers](#on_head_vote_message-helpers)
     - [New `is_valid_head_vote_message`](#new-is_valid_head_vote_message)
@@ -105,6 +110,13 @@ timeliness committee reach fork choice only from the wire. Head votes in a block
 carry no signature. Gossip validation checks the signature of a head vote
 message from the wire, and `process_stark` proves the signatures of the head
 votes in a block.
+
+At the fork, the store keeps the blocks and post-states it holds. The
+post-states of blocks before the fork stay EIP-8483 states, and blocks before
+the fork are imported with the EIP-8483 `on_block`. PQ fork choice reads every
+stored state through `get_block_state`, which upgrades an EIP-8483 state with
+`get_upgraded_state`. `on_block` applies the first block after the fork to the
+upgraded parent state.
 
 ## Constants
 
@@ -192,7 +204,9 @@ class Store:
     head_vote_committees: dict[Slot, HeadVoteCommittee]
     prepared_head_vote: tuple[Slot, ForkChoiceNode] | None = None
     restart_time_ms: Uint64 | None = None
-    pending_head_votes: list[HeadVoteMessage] = field(default_factory=list)
+    pending_head_votes: list[tuple[HeadVoteMessage, HeadVoteCommittee]] = field(
+        default_factory=list
+    )
 ```
 
 ### Modified `get_forkchoice_store`
@@ -296,7 +310,7 @@ def on_ac_restart(store: Store, time_ms: Uint64) -> None:
     for root in sorted(store.blocks, key=lambda root: (store.blocks[root].slot, root)):
         store.block_receipt_times[root] = time_ms
         for vote in store.blocks[root].body.head_votes:
-            record_head_vote_committee(store, store.block_states[root], vote.data)
+            record_head_vote_committee(store, get_block_state(store, root), vote.data)
 ```
 
 ### New `get_head_vote_due_ms`
@@ -345,6 +359,10 @@ def is_strict_ancestor_root(store: Store, root: Root, ancestor: Root) -> bool:
 
 ### New `get_deepest_node`
 
+*Note*: This helper has no root tie-break. Use it to select a node only from a
+chain or a compatible set. Callers comparing conflicting nodes must be
+independent of which tied node is returned, as in `is_compatible`.
+
 ```python
 def get_deepest_node(store: Store, nodes: set[ForkChoiceNode]) -> ForkChoiceNode:
     """
@@ -387,6 +405,52 @@ def get_subtree(store: Store, subtree_root: ForkChoiceNode) -> Sequence[ForkChoi
     return subtree
 ```
 
+### New `get_upgraded_state`
+
+*Note*: The upgrade replays the slots from the state's slot to the fork, up to
+an epoch near the fork. Implementations should cache the upgraded state of each
+stored block.
+
+```python
+def get_upgraded_state(state: eip8483.BeaconState | BeaconState) -> BeaconState:
+    """
+    Return ``state``, advanced to the PQ fork and upgraded if it is an EIP-8483
+    state.
+    """
+    if not isinstance(state, eip8483.BeaconState):
+        return state
+    pre = state.copy()
+    fork_slot = compute_start_slot_at_epoch(Epoch(PQ_FORK_EPOCH))
+    if pre.slot < fork_slot:
+        eip8483.process_slots(pre, fork_slot)
+    return upgrade_to_pq(pre)
+```
+
+### New `get_block_state`
+
+```python
+def get_block_state(store: Store, root: Root) -> BeaconState:
+    """
+    Return the post-state of the block at ``root``, upgraded at the EIP-8453
+    fork.
+    """
+    return get_upgraded_state(store.block_states[root])
+```
+
+### New `get_block_pre_state`
+
+```python
+def get_block_pre_state(store: Store, block: BeaconBlock) -> BeaconState:
+    """
+    Return the post-state of the parent of ``block``, upgraded at the EIP-8453
+    fork and advanced to the slot of ``block``.
+    """
+    state = get_block_state(store, block.parent_root).copy()
+    if state.slot < block.slot:
+        process_slots(state, block.slot)
+    return state
+```
+
 ### New `get_pulled_up_state`
 
 ```python
@@ -394,7 +458,7 @@ def get_pulled_up_state(store: Store, block_root: Root) -> BeaconState:
     """
     Return the state of the block pulled up to the current epoch if needed.
     """
-    block_state = store.block_states[block_root]
+    block_state = get_block_state(store, block_root)
     if get_current_epoch(block_state) < get_current_store_epoch(store):
         pulled_up_state = block_state.copy()
         process_slots(pulled_up_state, compute_start_slot_at_epoch(get_current_store_epoch(store)))
@@ -492,7 +556,7 @@ def is_fg_contest(store: Store) -> bool:
     max_height_blocks = [
         root
         for root in store.blocks
-        if store.block_states[root].target_checkpoint.height == store.max_height
+        if get_block_state(store, root).target_checkpoint.height == store.max_height
         and is_ancestor_root(store, root, store.finalized_checkpoint.root)
     ]
     return any(
@@ -509,7 +573,7 @@ def is_fg_viable_block(store: Store, block_root: Root) -> bool:
     """
     Return ``True`` if block passes the height floor check.
     """
-    block_target = store.block_states[block_root].target_checkpoint
+    block_target = get_block_state(store, block_root).target_checkpoint
     if is_fg_contest(store):
         return block_target.height >= store.max_height
     else:
@@ -680,6 +744,8 @@ def get_local_view_from_p2p_messages(
 #### New `get_view_from_blocks`
 
 *Note*: A general function to build AC view from votes included in blocks.
+Clients should cache head-vote committees by slot and dependent root, reusing
+them across block votes while keeping branch-dependent committees separate.
 
 ```python
 def get_view_from_blocks(
@@ -703,8 +769,13 @@ def get_view_from_blocks(
         if block.slot == block_slot and block_predicate(block_root):
             for vote_index, head_vote in enumerate(block.body.head_votes):
                 data = head_vote.data
-                # Filter by the vote slot
-                if data.slot == vote_slot:
+                # Only votes matching the slot's recorded committee enter AC views.
+                if (
+                    data.slot == vote_slot
+                    and data.slot in store.head_vote_committees
+                    and get_head_vote_committee(get_block_state(store, block_root), data.slot)
+                    == store.head_vote_committees[data.slot]
+                ):
                     vote_messages.append(head_vote)
                     proposer_support = bool(block.body.head_vote_support[vote_index])
                     support.append(is_supported(block_root, head_vote, proposer_support))
@@ -750,6 +821,23 @@ def get_local_view_from_blocks(
     )
 ```
 
+#### New `is_usable_proposer_support`
+
+```python
+def is_usable_proposer_support(
+    store: Store, tree: Sequence[ForkChoiceNode], data: HeadVoteData
+) -> bool:
+    node = ForkChoiceNode(root=data.beacon_block_root, payload_status=data.payload_status)
+    return (
+        node in tree
+        and store.blocks[node.root].slot <= data.slot
+        and (
+            store.blocks[node.root].slot < data.slot
+            or data.payload_status == PAYLOAD_STATUS_PENDING
+        )
+    )
+```
+
 #### New `get_proposer_view`
 
 *Note*: Builds an AC proposer view. Supporting votes must reference locally
@@ -763,23 +851,10 @@ def get_proposer_view(
     Return the proposer view for ``vote_slot`` from proposals made in ``block_slot``.
     """
 
+    tree = get_fg_frame(store).tree
+
     def is_supported(_block_root: Root, head_vote: HeadVote, proposer_support: bool) -> bool:
-        data = head_vote.data
-        # Proposer support counts only for a locally known block with correct block's slot
-        # and matching payload status
-        return (
-            proposer_support
-            and data.beacon_block_root in store.blocks
-            and (
-                store.blocks[data.beacon_block_root].slot < vote_slot
-                or data.payload_status == PAYLOAD_STATUS_PENDING
-            )
-            and store.blocks[data.beacon_block_root].slot <= vote_slot
-            and (
-                data.payload_status != PAYLOAD_STATUS_FULL
-                or is_payload_verified(store, data.beacon_block_root)
-            )
-        )
+        return proposer_support and is_usable_proposer_support(store, tree, head_vote.data)
 
     return get_view_from_blocks(
         store,
@@ -864,11 +939,12 @@ def get_equivocating_indices(votes: set[ACVote]) -> set[ValidatorIndex]:
 #### New `get_viable_ancestor`
 
 ```python
-def get_viable_ancestor(store: Store, fg_frame: FGFrame, node: ForkChoiceNode) -> ForkChoiceNode:
+def get_viable_ancestor(
+    store: Store, fg_frame: FGFrame, viable_tree: Sequence[ForkChoiceNode], node: ForkChoiceNode
+) -> ForkChoiceNode:
     """
     Return the deepest ancestor that is viable or an ancestor of the forkchoice root.
     """
-    viable_tree = get_viable_subtree(store, fg_frame, fg_frame.tree)
     return get_deepest_node(
         store,
         {
@@ -890,9 +966,10 @@ def get_live_locks(store: Store, fg_frame: FGFrame, time_ms: Uint64) -> set[ACLo
     """
     Return unexpired locks in the frame, each moved to its viable ancestor.
     """
+    viable_tree = get_viable_subtree(store, fg_frame, fg_frame.tree)
     return {
         ACLock(
-            node=get_viable_ancestor(store, fg_frame, lock.node),
+            node=get_viable_ancestor(store, fg_frame, viable_tree, lock.node),
             slot=lock.slot,
             fast=lock.fast,
             expiry_slot=lock.expiry_slot,
@@ -906,11 +983,8 @@ def get_live_locks(store: Store, fg_frame: FGFrame, time_ms: Uint64) -> set[ACLo
 #### New `conflicts_with_lock`
 
 ```python
-def conflicts_with_lock(store: Store, fg_frame: FGFrame, node: ForkChoiceNode) -> bool:
-    return any(
-        not is_compatible(store, lock.node, node)
-        for lock in get_live_locks(store, fg_frame, store.time_ms)
-    )
+def conflicts_with_lock(store: Store, live_locks: set[ACLock], node: ForkChoiceNode) -> bool:
+    return any(not is_compatible(store, lock.node, node) for lock in live_locks)
 ```
 
 #### New `compute_fast_lock_expiry`
@@ -920,12 +994,8 @@ nodes need not be on the new lock's branch. A lock moved to the finalized node
 still contributes. Locks from the same or a newer slot do not contribute.
 
 ```python
-def compute_fast_lock_expiry(store: Store, fg_frame: FGFrame, slot: Slot) -> Slot:
-    expiries = {
-        lock.expiry_slot
-        for lock in get_live_locks(store, fg_frame, store.time_ms)
-        if lock.fast and lock.slot < slot
-    }
+def compute_fast_lock_expiry(live_locks: set[ACLock], slot: Slot) -> Slot:
+    expiries = {lock.expiry_slot for lock in live_locks if lock.fast and lock.slot < slot}
     if len(expiries) == 0:
         return slot + 2
     return min(slot + SLOW_LOCK_WINDOW, max(slot + 2, max(expiries) + FAST_LOCK_EXTENSION))
@@ -1208,6 +1278,7 @@ genesis and nodes that conflict with a live lock.
 def compute_confirmed_lock(
     store: Store,
     fg_frame: FGFrame,
+    live_locks: set[ACLock],
     confirmed: ForkChoiceNode,
     test_predicate: Callable[[ForkChoiceNode], bool],
 ) -> ForkChoiceNode | None:
@@ -1219,7 +1290,7 @@ def compute_confirmed_lock(
         for node in fg_frame.tree
         if is_ancestor(store, confirmed, node)
         and store.blocks[node.root].slot > GENESIS_SLOT
-        and not conflicts_with_lock(store, fg_frame, node)
+        and not conflicts_with_lock(store, live_locks, node)
         and test_predicate(node)
     }
 
@@ -1236,6 +1307,7 @@ The deepest selected node is the fast lock.
 def compute_fast_lock(
     store: Store,
     fg_frame: FGFrame,
+    live_locks: set[ACLock],
     votes: set[ACVote],
     support_votes: set[ACVote],
     slot: Slot,
@@ -1247,6 +1319,7 @@ def compute_fast_lock(
     return compute_confirmed_lock(
         store=store,
         fg_frame=fg_frame,
+        live_locks=live_locks,
         confirmed=confirmed,
         test_predicate=lambda node: (
             2 * compute_confirmation_score(store, votes, support_votes, slot, node)
@@ -1268,7 +1341,7 @@ The deepest such node is the slow lock.
 
 ```python
 def compute_slow_lock(
-    store: Store, fg_frame: FGFrame, slot: Slot, confirmed: ForkChoiceNode
+    store: Store, fg_frame: FGFrame, live_locks: set[ACLock], slot: Slot, confirmed: ForkChoiceNode
 ) -> ForkChoiceNode | None:
     """
     Return the slow lock, or ``None`` if the window or common ancestor is missing.
@@ -1286,6 +1359,7 @@ def compute_slow_lock(
     slow_lock = compute_confirmed_lock(
         store=store,
         fg_frame=fg_frame,
+        live_locks=live_locks,
         confirmed=confirmed,
         test_predicate=lambda node: all(
             is_ancestor(store, store.saved_confirmations[Slot(j)], node) for j in previous_slots
@@ -1365,6 +1439,7 @@ def update_locks_and_confirmation(
     store: Store,
     slot: Slot,
     fg_frame: FGFrame,
+    live_locks: set[ACLock],
     confirmed: ForkChoiceNode,
     fast_lock: ForkChoiceNode | None,
     slow_lock: ForkChoiceNode | None,
@@ -1373,7 +1448,7 @@ def update_locks_and_confirmation(
     Record the candidate and separate fast and slow locks, even when confirmation is vetoed.
     """
     store.saved_confirmations[slot] = confirmed
-    vetoed = conflicts_with_lock(store, fg_frame, confirmed)
+    vetoed = conflicts_with_lock(store, live_locks, confirmed)
 
     locks = set()
     if fast_lock is not None:
@@ -1382,7 +1457,7 @@ def update_locks_and_confirmation(
                 node=fast_lock,
                 slot=slot,
                 fast=True,
-                expiry_slot=compute_fast_lock_expiry(store, fg_frame, slot),
+                expiry_slot=compute_fast_lock_expiry(live_locks, slot),
             )
         )
     if slow_lock is not None:
@@ -1424,8 +1499,9 @@ def record_payload_receipt_time(store: Store, root: Root) -> None:
 #### New `record_head_vote_committee`
 
 *Note*: Store the head vote committee for a vote from the previous or current
-slot. Other slot committees aren't used in any of AC walks. Assumes all branches
-agree on the committee for a given slot.
+slot. The first recorded committee supplies the slot's weights. Block and P2P
+votes with another committee are excluded from AC views, while their blocks
+remain available. Per-branch committee keying is an open protocol decision.
 
 ```python
 def record_head_vote_committee(store: Store, state: BeaconState, data: HeadVoteData) -> None:
@@ -1433,21 +1509,21 @@ def record_head_vote_committee(store: Store, state: BeaconState, data: HeadVoteD
     Store head vote committee.
     """
     if data.slot + 1 >= get_current_slot(store):
-        if data.slot in store.head_vote_committees:
-            assert store.head_vote_committees[data.slot] == get_head_vote_committee(
-                state, data.slot
-            )
-        else:
-            store.head_vote_committees[data.slot] = get_head_vote_committee(state, data.slot)
+        store.head_vote_committees.setdefault(data.slot, get_head_vote_committee(state, data.slot))
 ```
 
 #### New `record_head_vote_message`
 
 ```python
-def record_head_vote_message(store: Store, state: BeaconState, message: HeadVoteMessage) -> None:
+def record_head_vote_message(
+    store: Store, committee: HeadVoteCommittee, message: HeadVoteMessage
+) -> None:
     """
     Store head vote message in the pool, updates its receipt time and its slot committee.
     """
+    stored_committee = store.head_vote_committees.get(message.data.slot)
+    if stored_committee is not None and stored_committee != committee:
+        return
     # Keep at most two distinct vote data values for each validator and slot.
     slot_pool = store.head_vote_messages.get(message.data.slot, [])
     previous = [vote for vote in slot_pool if vote.validator_index == message.validator_index]
@@ -1460,8 +1536,8 @@ def record_head_vote_message(store: Store, state: BeaconState, message: HeadVote
     message_root = hash_tree_root(message)
     store.head_vote_message_receipt_times[message_root] = store.time_ms
 
-    # Add committee
-    record_head_vote_committee(store, state, message.data)
+    # The first validated view supplies the committee for this slot.
+    store.head_vote_committees.setdefault(message.data.slot, committee)
 ```
 
 ### `on_tick` helpers
@@ -1493,25 +1569,82 @@ def update_confirmation(store: Store, slot: Slot) -> None:
         store.saved_confirmations.pop(slot, None)
         return
 
+    live_locks = get_live_locks(store, fg_frame, store.time_ms)
     fast_lock = compute_fast_lock(
         store=store,
         fg_frame=fg_frame,
+        live_locks=live_locks,
         votes=votes,
         support_votes=support_votes,
         slot=slot,
         confirmed=confirmed,
     )
-    slow_lock = compute_slow_lock(store, fg_frame, slot, confirmed)
+    slow_lock = compute_slow_lock(store, fg_frame, live_locks, slot, confirmed)
 
     # Write updates to store
     update_locks_and_confirmation(
         store,
         slot,
         fg_frame,
+        live_locks,
         confirmed,
         fast_lock,
         slow_lock,
     )
+```
+
+#### New `update_optimistic_confirmation`
+
+*Note*: Before the half-slot cutoff, a joined node confirms the deepest node
+supported by resolved votes from at least three quarters of the current
+committee seats and conflicting with no live lock. Equal-depth candidates prefer
+a decided payload over PENDING, then the lowest root and payload status. Each
+validator counts once per candidate, including an equivocator with a vote
+extending that candidate. This writes a current-slot fast lock but does not
+write a scheduled confirmation candidate or emit an FG attestation.
+
+```python
+def update_optimistic_confirmation(store: Store) -> None:
+    slot = get_current_slot(store)
+    if not is_ac_joined(store) or slot == GENESIS_SLOT:
+        return
+    if get_time_into_slot_ms(store) >= get_support_cutoff_ms():
+        return
+    fg_frame = get_fg_frame(store)
+    _, support_votes = get_combined_local_view(store, slot, INFINITE_TIME_MS, INFINITE_TIME_MS)
+    live_locks = get_live_locks(store, fg_frame, store.time_ms)
+    candidates = set()
+    for node in fg_frame.tree:
+        voters = {
+            vote.validator_index
+            for vote in support_votes
+            if vote.slot == slot
+            and vote.supported_node in fg_frame.tree
+            and is_ancestor(store, vote.supported_node, node)
+        }
+        seats = sum(get_validator_seats_count(store, slot, index) for index in voters)
+        if 4 * seats >= 3 * get_head_vote_committee_seats_count() and not conflicts_with_lock(
+            store, live_locks, node
+        ):
+            candidates.add(node)
+    if len(candidates) == 0:
+        return
+    confirmed = min(
+        candidates,
+        key=lambda node: (
+            -int(store.blocks[node.root].slot),
+            node.payload_status == PAYLOAD_STATUS_PENDING,
+            node.root,
+            node.payload_status,
+        ),
+    )
+    expiry = compute_fast_lock_expiry(live_locks, slot)
+    add_locks(store, fg_frame, {ACLock(node=confirmed, slot=slot, fast=True, expiry_slot=expiry)})
+    if not (
+        store.latest_confirmed in fg_frame.tree
+        and is_ancestor(store, store.latest_confirmed, confirmed)
+    ):
+        store.latest_confirmed = confirmed
 ```
 
 #### New `unlock`
@@ -1596,7 +1729,11 @@ def is_valid_head_vote_message(state: BeaconState, message: HeadVoteMessage) -> 
 *Note*: Updates the store time, then prepares the head vote or runs confirmation
 when scheduled at `time_ms`. Every node prepares the head vote, including nodes
 without a validator on the committee. Callers must process this tick before
-other events at the same timestamp.
+other events at the same timestamp. A delayed client timer processes every
+crossed duty timestamp in order before advancing to its wall time: the first
+physical tick at or after the deadline dispatches the deadline duty with that
+scheduled timestamp. Queued early votes carry their validated committee and are
+admitted without revalidation against a possibly changed head state.
 
 ```python
 def on_tick(store: Store, time_ms: Uint64) -> None:
@@ -1627,13 +1764,18 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
 
     pending = store.pending_head_votes
     store.pending_head_votes = []
-    for message in pending:
-        on_head_vote_message(store, message)
+    for message, committee in pending:
+        if message.data.slot > slot:
+            store.pending_head_votes.append((message, committee))
+        elif message.data.slot >= previous_slot:
+            record_head_vote_message(store, committee, message)
+            update_optimistic_confirmation(store)
+            get_ac_vote_head(store)
 
     if not is_ac_joined(store):
         return
 
-    if slot > GENESIS_SLOT and time_into_slot_ms == get_head_vote_due_ms():
+    if time_into_slot_ms == get_head_vote_due_ms():
         get_ac_vote_head(store)
 
     if slot > GENESIS_SLOT and time_into_slot_ms == get_support_cutoff_ms():
@@ -1674,8 +1816,9 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
     # Run finalized check over the parent to avoid circular dependency.
     assert is_ancestor_root(store, block.parent_root, store.finalized_checkpoint.root)
 
-    # Make a copy of the state to avoid mutability issues
-    state = store.block_states[block.parent_root].copy()
+    # [Modified in PQ:EIP8453]
+    # Make a copy of the parent's state, upgraded at the PQ fork
+    state = get_block_state(store, block.parent_root).copy()
 
     # Check the block is valid and compute the post-state
     state_transition(state, signed_block, validate_result=True)
@@ -1701,6 +1844,7 @@ def on_block(store: Store, signed_block: SignedBeaconBlock) -> None:
 
     # [Modified in PQ]
     # Removed `notify_ptc_messages`
+    update_optimistic_confirmation(store)
     get_ac_vote_head(store)
 ```
 
@@ -1734,6 +1878,7 @@ def on_execution_payload_envelope(
 
     # Add execution payload envelope to the store
     store.payloads[envelope.beacon_block_root] = envelope
+    update_optimistic_confirmation(store)
     get_ac_vote_head(store)
 ```
 
@@ -1799,6 +1944,14 @@ def on_payload_attestation_message(
 def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     current_slot = get_current_slot(store)
     previous_slot = saturating_sub(current_slot, 1)
+    data = message.data
+    if data.beacon_block_root in store.blocks:
+        block_slot = store.blocks[data.beacon_block_root].slot
+        assert block_slot <= data.slot
+        if block_slot == data.slot:
+            assert data.payload_status == PAYLOAD_STATUS_PENDING
+        else:
+            assert data.payload_status in (PAYLOAD_STATUS_EMPTY, PAYLOAD_STATUS_FULL)
 
     if message.data.slot == current_slot + 1:
         slot_start = compute_time_at_slot_ms(store.genesis_time_ms, message.data.slot)
@@ -1806,7 +1959,7 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
             return
         previous = [
             vote
-            for vote in store.pending_head_votes
+            for vote, _ in store.pending_head_votes
             if vote.validator_index == message.validator_index
             and vote.data.slot == message.data.slot
         ]
@@ -1814,7 +1967,10 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
             return
         state = get_pulled_up_state(store, get_head(store).root)
         assert is_valid_head_vote_message(state, message)
-        store.pending_head_votes.append(message)
+        store.pending_head_votes.append((
+            message,
+            get_head_vote_committee(state, message.data.slot),
+        ))
         return
     if message.data.slot not in [previous_slot, current_slot]:
         return
@@ -1831,7 +1987,8 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     assert is_valid_head_vote_message(state, message)
 
     # Record the message
-    record_head_vote_message(store, state, message)
+    record_head_vote_message(store, get_head_vote_committee(state, message.data.slot), message)
+    update_optimistic_confirmation(store)
     get_ac_vote_head(store)
 ```
 
@@ -1841,7 +1998,10 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
 
 *Note*: At the start of a slot, selects the proposal head using received and
 resolved P2P votes from the previous slot. Returns the head, vote messages, and
-supporting message indices.
+supporting message indices. The receipt and resolution thresholds are infinite,
+so whether a vote is support depends only on its data and the store, not on when
+the vote or its block was received. Votes with the same data are all support or
+all not, which is why a block records one support bit per head vote.
 
 ```python
 def get_ac_proposal(
@@ -1883,27 +2043,39 @@ def get_ac_proposal(
 
 ### New `is_ac_vote_ready`
 
+*Note*: Early readiness uses the single proposer expected by the node's head
+chain for the current slot. Proposals by other branches' proposers do not
+trigger an early vote. At least one proposal from that proposer must have all
+marked support usable in the local FG tree.
+
 ```python
 def is_ac_vote_ready(store: Store) -> bool:
     """
     Return whether a current proposal has all of its supporting heads available.
     """
     slot = get_current_slot(store)
-    if slot == GENESIS_SLOT:
+    if slot == GENESIS_SLOT or not any(block.slot == slot for block in store.blocks.values()):
         return False
-    tree = set(get_fg_frame(store).tree)
+    tree = get_fg_frame(store).tree
+    state = get_pulled_up_state(store, get_head(store).root).copy()
+    # The pulled-up state's proposer lookahead covers every slot of this epoch.
+    state.slot = slot
+    proposer_index = get_beacon_proposer_index(state)
     for root, block in store.blocks.items():
         proposal = ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
-        if block.slot != slot or proposal not in tree:
+        if block.slot != slot or block.proposer_index != proposer_index or proposal not in tree:
             continue
         ready = True
         for vote, support in zip(block.body.head_votes, block.body.head_vote_support, strict=True):
-            if vote.data.slot != slot - 1 or not support:
+            if (
+                vote.data.slot != slot - 1
+                or not support
+                or vote.data.slot not in store.head_vote_committees
+                or get_head_vote_committee(get_block_state(store, root), vote.data.slot)
+                != store.head_vote_committees[vote.data.slot]
+            ):
                 continue
-            node = ForkChoiceNode(
-                root=vote.data.beacon_block_root, payload_status=vote.data.payload_status
-            )
-            if node not in tree or store.blocks[node.root].slot > slot - 1:
+            if not is_usable_proposer_support(store, tree, vote.data):
                 ready = False
                 break
         if ready:
@@ -1928,12 +2100,15 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
     if store.prepared_head_vote is not None and store.prepared_head_vote[0] == current_slot:
         return store.prepared_head_vote[1]
     elapsed = get_time_into_slot_ms(store)
-    if current_slot == GENESIS_SLOT or elapsed > get_head_vote_due_ms():
+    if elapsed > get_head_vote_due_ms():
         return None
     if elapsed < get_head_vote_due_ms() and not is_ac_vote_ready(store):
         return None
 
     fg_frame = get_fg_frame(store)
+    if current_slot == GENESIS_SLOT:
+        store.prepared_head_vote = (current_slot, fg_frame.finalized_node)
+        return fg_frame.finalized_node
     view_freeze_ms = (
         compute_time_at_slot_ms(store.genesis_time_ms, current_slot - 1) + get_view_freeze_ms()
     )
@@ -1981,7 +2156,10 @@ For a joined node, the FG confirmation node is the deepest viable effective live
 fast-lock node whose confirmation slot is at least the current slot minus two,
 or `None` if no such node exists. Slow locks do not provide FG sources.
 
-The AC frame is used by validators to cast FG attestations.
+The AC frame is used by validators at scheduled FG duties. Each duty reads the
+currently eligible source; publication is deduplicated by each validator's
+persistent signing record rather than a node-level source watermark. A later
+duty may therefore read a source equal to or ancestral to an earlier source.
 
 ```python
 def get_ac_frame(store: Store) -> tuple[ForkChoiceNode | None, ForkChoiceNode]:

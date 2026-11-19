@@ -309,7 +309,8 @@ def get_latest_attestation_committee_slot(
     """
     Return the latest slot of the attestation committee at ``committee_index``
     that has started, allowing for ``MAXIMUM_GOSSIP_CLOCK_DISPARITY``, or
-    ``None`` if no slot of the committee has started.
+    ``None`` if no slot of the committee at or after the PQ fork has
+    started.
     """
     current_time_with_disparity_ms = current_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY
     current_slot = compute_slot_at_time_ms(store.genesis_time_ms, current_time_with_disparity_ms)
@@ -318,7 +319,9 @@ def get_latest_attestation_committee_slot(
     if slot > current_slot:
         if round == GENESIS_ROUND:
             return None
-        return compute_attestation_committee_slot(round - 1, committee_index)
+        slot = compute_attestation_committee_slot(round - 1, committee_index)
+    if compute_epoch_at_slot(slot) < PQ_FORK_EPOCH:
+        return None
     return slot
 ```
 
@@ -420,7 +423,13 @@ def validate_beacon_block_gossip(
     if is_future_slot(store, block.slot, current_time_ms):
         raise GossipIgnore("block is from a future slot")
 
-    state = store.block_states[get_head(store).root]
+    # [New in PQ:EIP8453]
+    # [IGNORE] The block is from a slot at or after the PQ fork
+    if compute_epoch_at_slot(block.slot) < PQ_FORK_EPOCH:
+        raise GossipIgnore("block is from a slot before the pq fork")
+
+    # [Modified in PQ:EIP8453]
+    state = get_block_state(store, get_head(store).root)
 
     # [Modified in PQ:EIP8453]
     # [IGNORE] The block is from a slot greater than the latest finalized slot
@@ -444,13 +453,23 @@ def validate_beacon_block_gossip(
     if block.parent_root not in store.block_states:
         raise GossipReject("block's parent is invalid")
 
-    # [REJECT] The proposer index is a valid validator index
-    if block.proposer_index >= len(state.validators):
-        raise GossipReject("proposer index out of range")
+    # [REJECT] The block is from a higher slot than its parent
+    if block.slot <= store.blocks[block.parent_root].slot:
+        raise GossipReject("block is not from a higher slot than its parent")
+
+    # [Modified in PQ:EIP8453]
+    # The proposer's key is read from the parent's state, before it is advanced:
+    # keys never change and indices are never reused on a branch
+    parent_state = get_block_state(store, block.parent_root)
+
+    # [IGNORE] The proposer is in the registry of the parent's state
+    # (MAY be validated against the parent's state advanced to the block's slot)
+    if block.proposer_index >= len(parent_state.validators):
+        raise GossipIgnore("proposer is not in the registry of the parent's state")
 
     # [REJECT] The proposer signature is valid
-    proposer = state.validators[block.proposer_index]
-    domain = get_domain(state, DOMAIN_BEACON_PROPOSER, compute_epoch_at_slot(block.slot))
+    proposer = parent_state.validators[block.proposer_index]
+    domain = get_domain(parent_state, DOMAIN_BEACON_PROPOSER, compute_epoch_at_slot(block.slot))
     signing_root = compute_signing_root(block, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_leaf_index(block.slot, LEAF_OFFSET_BEACON_PROPOSER)
@@ -462,10 +481,6 @@ def validate_beacon_block_gossip(
     if is_parent_node_full(store, block):
         if not is_payload_verified(store, block.parent_root):
             raise GossipIgnore("parent payload is not verified")
-
-    # [REJECT] The block is from a higher slot than its parent
-    if block.slot <= store.blocks[block.parent_root].slot:
-        raise GossipReject("block is not from a higher slot than its parent")
 
     # [Modified in PQ:EIP8453]
     # [REJECT] The finalized block is an ancestor of the block
@@ -481,9 +496,11 @@ def validate_beacon_block_gossip(
     if bid.parent_block_root != block.parent_root:
         raise GossipReject("bid's parent does not equal block's parent")
 
+    # [Modified in PQ:EIP8453]
+    # The parent's state advanced to the block's slot selects the proposer
+    parent_state = get_block_pre_state(store, block)
+
     # [REJECT] The block is proposed by the expected proposer for the slot
-    parent_state = store.block_states[block.parent_root].copy()
-    process_slots(parent_state, block.slot)
     expected_proposer = get_beacon_proposer_index(parent_state)
     if block.proposer_index != expected_proposer:
         raise GossipReject("block proposer_index does not match expected proposer")
@@ -581,7 +598,7 @@ def validate_head_vote_gossip(
     if store.blocks[block_root].slot > data.slot:
         raise GossipReject("block being voted for is from a later slot")
 
-    state = store.block_states[get_head(store).root]
+    state = get_pulled_up_state(store, get_head(store).root)
 
     # [IGNORE] The finalized block is an ancestor of the block being voted for
     if not is_finalized_ancestor(store, state, block_root):
@@ -1046,16 +1063,19 @@ def validate_attestation_gossip(
         raise GossipReject("attestation data is not well formed")
 
     # [REJECT] The target block, if it has been validated, opened the target height
-    if data.target.root in store.block_states:
+    # (the target of height 1 is set by the upgrade to EIP-8453, and only blocks
+    # at or after the fork open later heights)
+    if data.target.height > Height(1) and data.target.root in store.block_states:
         target_state = store.block_states[data.target.root]
         if (
-            target_state.target_checkpoint.root != Root()
+            compute_epoch_at_slot(target_state.slot) < PQ_FORK_EPOCH
+            or target_state.target_checkpoint.root != Root()
             or target_state.target_checkpoint.height != data.target.height
         ):
             raise GossipReject("target block did not open the target height")
 
     head = get_head(store)
-    state = store.block_states[head.root]
+    state = get_block_state(store, head.root)
     target = state.target_checkpoint.copy()
     if target.root == Root():
         # The head block is the target of the head state's height

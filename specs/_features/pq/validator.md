@@ -329,14 +329,18 @@ in the previous and current epochs that add seats for the block of their slot,
 since these weigh builder payments.
 
 Set `block.body.head_vote_support` to one bit per included aggregate, in the
-same order. Set an aggregate's bit if the proposer counted its votes as support
-in its previous slot head-vote view. A counted vote must be of slot
-`block.slot - 1`, for a block in the accepted tree at proposal time whose slot
-is no later than the vote's slot. Otherwise, clear the bit.
+same order. Set an aggregate's bit if its votes are among the supporting votes
+of the view returned by
+[`get_ac_proposal`](./fork-choice.md#new-get_ac_proposal) at the start of the
+slot. A counted vote must be of slot `block.slot - 1`, for a block in the
+accepted tree at proposal time whose slot is no later than the vote's slot.
+Otherwise, clear the bit.
 
-*Note*: The voters of an aggregate share its data, so the proposer counts all of
-their votes as support or none of them. A vote for an unknown block may be
-included with its support bit cleared.
+*Note*: The view of `get_ac_proposal` resolves support with an infinite
+resolution threshold, so support depends only on the vote data and the store,
+not on receipt times. The voters of an aggregate share its data, so the proposer
+counts all of their votes as support or none of them. A vote for an unknown
+block may be included with its support bit cleared.
 
 *TODO*: Specify aggregate selection when the proposal view exceeds
 `MAX_HEAD_VOTES`, preserving the requirements of view merge.
@@ -538,12 +542,13 @@ merged with current proposals. When a new prepared head becomes available,
 assigned validators immediately sign, process locally and broadcast their vote
 once. Unselected validators do not sign, self-admit or emit a vote. Repeated
 requests in the same slot return the prepared head without unlocking again. A
-`None` result means no vote is permitted. Nodes must observe continuously from
-the start of the previous slot after startup or restart before proposing,
-preparing votes, confirming or publishing an FG source. Validator signing
-records survive restart, including the record of head votes already signed; a
-validator must never sign two different head votes for one slot. A missing
-`get_ac_proposal` result means the proposal duty is skipped.
+`None` result means preparation is not ready yet, the node has not joined, or
+the deadline was missed. Nodes must observe continuously from the start of the
+previous slot after startup or restart before proposing, preparing votes,
+confirming or publishing an FG source. Validator signing records survive
+restart, including the record of head votes already signed; a validator must
+never sign two different head votes for one slot. A missing `get_ac_proposal`
+result means the proposal duty is skipped.
 
 #### Head vote data
 
@@ -599,9 +604,11 @@ assigned slot and staggered committee schedule.
 
 #### Attestation data
 
-First, obtain `source` and `head` from the same AC-to-FG observation. The source
-is the deepest block in the viable tree passing the fast test in the applicable
-confirmation update. If no such block exists, the validator does not attest.
+First, obtain `source` and `head` from `get_ac_frame(store)` at or after the
+support cutoff. For a joined node, `source` is the deepest viable effective live
+fast-lock node whose confirmation slot is at least the current slot minus two.
+Slow locks do not provide FG sources. If `source` is `None`, the validator does
+not attest.
 
 Let `source_state` and `head_state` be the states after processing `source` and
 `head`, respectively:
@@ -611,7 +618,7 @@ Let `source_state` and `head_state` be the states after processing `source` and
 - Let `finalized_height = head_state.finalized_checkpoint.height`.
 
 If `target.root == Root()` because `source` advanced the height, set
-`target.root = hash_tree_root(source)`.
+`target.root = source.root`.
 
 *Note*: The height vote comes from the source state. The finality pair comes
 from the head state.
@@ -629,11 +636,13 @@ def get_finality_vote(
     height, root = justified.height, justified.root
     if height <= finalized_height:
         return HeightCheckpoint.empty()
-    if record.targets.get(height) not in (None, root):
+    previous_target = record.targets.get(height)
+    if previous_target is not None and previous_target != root:
         return HeightCheckpoint.empty()
     if not record.timeouts.get(height, set()) <= {root}:
         return HeightCheckpoint.empty()
-    if record.finality_locks.get(height) not in (None, root):
+    lock = record.finality_locks.get(height)
+    if lock is not None and lock != root:
         return HeightCheckpoint.empty()
     return justified.copy()
 ```
@@ -660,9 +669,10 @@ def get_height_vote(
         return None
     if height in record.timeouts:
         return target.copy(), True
-    if record.targets.get(height) in (None, root):
-        return target.copy(), False
-    return target.copy(), True
+    previous_target = record.targets.get(height)
+    if previous_target is not None and previous_target != root:
+        return target.copy(), True
+    return target.copy(), False
 ```
 
 *Note*: The candidate finality pair constrains the height vote before it is

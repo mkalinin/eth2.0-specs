@@ -1,3 +1,5 @@
+from importlib import import_module
+
 from eth_consensus_specs.test.helpers.constants import (
     PQ,
 )
@@ -192,3 +194,14 @@ def run_fork_test(post_spec, pre_state):
     yield "post", post_state
 
     return post_state
+
+
+def upgrade_registered_to_pq(post_spec, pre_state):
+    """
+    Register every validator's XMSS public key and VRF root in ``pre_state``,
+    an EIP-8483 state, unless it has registrations, and upgrade it to PQ.
+    """
+    pre_spec = import_module(f"eth_consensus_specs.eip8483.{post_spec.config.PRESET_BASE}")
+    if len(pre_state.validator_pq_registrations) == 0:
+        register_xmss_pubkeys(pre_spec, pre_state)
+    return post_spec.upgrade_to_pq(pre_state)

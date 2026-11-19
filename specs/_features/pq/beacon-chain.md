@@ -151,6 +151,7 @@
     - [New `remove_builder_preregistration`](#new-remove_builder_preregistration)
     - [New `add_participation_flag`](#new-add_participation_flag)
 - [Beacon chain state transition function](#beacon-chain-state-transition-function)
+  - [Modified `state_transition`](#modified-state_transition)
   - [Modified `verify_block_signature`](#modified-verify_block_signature)
   - [Modified `process_slots`](#modified-process_slots)
   - [Modified `process_slot`](#modified-process_slot)
@@ -518,7 +519,10 @@ class HeadVoteParticipation(Vector[HeadVoteCommitteeBits]):
 class HeadVoteSupport(ProgressiveBitList):
     """
     One bit per head vote in a beacon block, in the order of ``head_votes``,
-    set when the proposer counted that head vote as support.
+    set when the proposer counted that head vote as support. The proposer
+    resolves support with an infinite resolution threshold, so support depends
+    only on the vote data and the proposer's store and is the same for every
+    voter of a head vote.
     """
 ```
 
@@ -2257,6 +2261,31 @@ def add_participation_flag(state: BeaconState, index: ValidatorIndex, flag_index
 
 ## Beacon chain state transition function
 
+### Modified `state_transition`
+
+*Note*: The upgraded state of the last block before the PQ fork is already at
+the fork slot, where the first block after the fork can be. Slots are processed
+only up to the block's slot.
+
+```python
+def state_transition(
+    state: BeaconState, signed_block: SignedBeaconBlock, validate_result: bool = True
+) -> None:
+    block = signed_block.message
+    # [Modified in PQ:EIP8453]
+    # Process slots (including those with no blocks) since block
+    if state.slot < block.slot:
+        process_slots(state, block.slot)
+    # Verify signature
+    if validate_result:
+        assert verify_block_signature(state, signed_block)
+    # Process block
+    process_block(state, block)
+    # Verify state root
+    if validate_result:
+        assert block.state_root == hash_tree_root(state)
+```
+
 ### Modified `verify_block_signature`
 
 ```python
@@ -2950,6 +2979,15 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
 which seats voted for the block of their slot, to weigh builder payments. A head
 vote carries no signature, so `process_stark` verifies the signatures of all
 head votes in the block instead.
+
+*TODO*: `head_vote` gossip rejects a `PAYLOAD_STATUS_PENDING` vote for a block
+earlier than the vote's slot, and `on_head_vote_message` refuses one when that
+block is known at receipt. Such a vote is still accepted by `process_head_vote`
+in a block, by `is_usable_proposer_support` as proposer support, by
+`is_valid_head_vote_message` for a direct vote received before its block, and by
+`get_vote_resolution_time`, which resolves both block votes and direct votes.
+Either require `PAYLOAD_STATUS_EMPTY` or `PAYLOAD_STATUS_FULL` for such votes in
+these places, or document the remaining lenience as intended.
 
 ```python
 def process_head_vote(state: BeaconState, vote: HeadVote, is_supported: bool) -> None:
