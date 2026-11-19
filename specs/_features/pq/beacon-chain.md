@@ -244,12 +244,12 @@ weigh builder payments.
 Validators cast FG attestations in rounds of `SLOTS_PER_ROUND` slots. Each
 validator sits on the attestation committee given by its index modulo
 `ATTESTATION_COMMITTEES_PER_ROUND`, and committees are spread evenly over the
-slots of a round, moving to the next slot in every round. In every round, an
-active validator casts its FG attestation in its committee's slot. A block
-includes only attestations for the chain's current target. Their bits are laid
-out in the committees of the target's epoch, so an aggregate keeps one encoding
-for as long as it can be included. Rewards and inactivity are settled at the end
-of each round, in `process_round`.
+slots of a round, moving by at most one slot from round to round. In every
+round, an active validator casts its FG attestation in its committee's slot. A
+block includes only attestations for the chain's current target. Their bits are
+laid out in the committees of the target's epoch, so an aggregate keeps one
+encoding for as long as it can be included. Rewards and inactivity are settled
+at the end of each round, in `process_round`.
 
 A validator earns the progress flag for a target vote or a timeout at the
 current height, and the finality flag for a finality pair of a pending
@@ -1393,9 +1393,12 @@ def compute_start_slot_at_round(round: Round) -> Slot:
 
 *Note*: The committees are split in index order into blocks of
 `ATTESTATION_COMMITTEES_PER_ROUND // SLOTS_PER_ROUND` committees, one block per
-slot of a round. In every round each block votes one slot later than in the
-previous round, wrapping around, so every committee votes in each slot of a
-round once every `SLOTS_PER_ROUND` rounds.
+slot of a round. From one round to the next, neighbouring blocks swap slots: the
+blocks in slots `(0, 1), (2, 3), ...` after an even round and in slots
+`(1, 2), (3, 4), ...` after an odd round. Each block moves towards one end of
+the round, stays there for one round and moves back, so it votes in every slot
+twice every `2 * SLOTS_PER_ROUND` rounds. Consecutive votes of a committee are
+`SLOTS_PER_ROUND - 1`, `SLOTS_PER_ROUND` or `SLOTS_PER_ROUND + 1` slots apart.
 
 ```python
 def compute_attestation_committee_slot(round: Round, index: CommitteeIndex) -> Slot:
@@ -1403,9 +1406,17 @@ def compute_attestation_committee_slot(round: Round, index: CommitteeIndex) -> S
     Return the slot of ``round`` assigned to the committee at ``index``.
     """
     committees_per_slot = ATTESTATION_COMMITTEES_PER_ROUND // Uint64(SLOTS_PER_ROUND)
-    # The block of committees moves by one slot in every round
-    offset = (Uint64(index) // committees_per_slot + Uint64(round)) % Uint64(SLOTS_PER_ROUND)
-    return compute_start_slot_at_round(round) + Slot(offset)
+    block = Uint64(index) // committees_per_slot
+    period = 2 * Uint64(SLOTS_PER_ROUND)
+    # Even blocks move towards the last slot first, odd blocks towards the first
+    if block % 2 == 0:
+        position = (block + Uint64(round)) % period
+    else:
+        position = (block + period - Uint64(round) % period) % period
+    # Positions past the last slot walk back from it
+    if position >= SLOTS_PER_ROUND:
+        position = period - 1 - position
+    return compute_start_slot_at_round(round) + Slot(position)
 ```
 
 #### Modified `compute_ptc`

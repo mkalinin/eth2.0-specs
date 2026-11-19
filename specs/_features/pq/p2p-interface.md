@@ -305,16 +305,19 @@ latest slot of its committee that has started, which fixes its round.
 ```python
 def get_latest_attestation_committee_slot(
     store: Store, committee_index: CommitteeIndex, current_time_ms: Uint64
-) -> Slot:
+) -> Slot | None:
     """
     Return the latest slot of the attestation committee at ``committee_index``
-    that has started, allowing for ``MAXIMUM_GOSSIP_CLOCK_DISPARITY``.
+    that has started, allowing for ``MAXIMUM_GOSSIP_CLOCK_DISPARITY``, or
+    ``None`` if no slot of the committee has started.
     """
     current_time_with_disparity_ms = current_time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY
     current_slot = compute_slot_at_time_ms(store.genesis_time_ms, current_time_with_disparity_ms)
     round = compute_round_at_slot(current_slot)
     slot = compute_attestation_committee_slot(round, committee_index)
     if slot > current_slot:
+        if round == GENESIS_ROUND:
+            return None
         return compute_attestation_committee_slot(round - 1, committee_index)
     return slot
 ```
@@ -989,7 +992,9 @@ def validate_proposer_preferences_gossip(
 The `attestation_{subnet_id}` topics, where each committee index maps to some
 `subnet_id`, are used to propagate FG attestations as `SingleAttestation`. FG
 attestations carry neither a slot nor a block root. Each validator may propagate
-one attestation per round, in the slot of its attestation committee.
+one attestation per round, in the slot of its attestation committee. Only
+attestations for the current target of the head state are propagated, as only
+those can be included.
 
 There are `ATTESTATION_SUBNET_COUNT_PQ` attestation subnets. `Attnets` keeps its
 length of `ATTESTATION_SUBNET_COUNT` bits, so `MetaData` and the `attnets` ENR
@@ -1022,6 +1027,10 @@ def validate_attestation_gossip(
 
     slot = get_latest_attestation_committee_slot(store, committee_index, current_time_ms)
 
+    # [IGNORE] A slot of the attestation committee has started
+    if slot is None:
+        raise GossipIgnore("no slot of the attestation committee has started")
+
     # [IGNORE] No other valid attestation seen for this round and validator
     attestation_round_key = (compute_round_at_slot(slot), attester_index)
     if attestation_round_key in seen.attestation_validator_rounds:
@@ -1036,24 +1045,31 @@ def validate_attestation_gossip(
     if not is_well_formed_attestation_data(data):
         raise GossipReject("attestation data is not well formed")
 
-    # [IGNORE] The target block has been seen (via gossip or non-gossip sources)
-    # (MAY be queued until block is retrieved)
-    if data.target.root not in store.blocks:
-        raise GossipIgnore("target block has not been seen")
+    # [REJECT] The target block, if it has been validated, opened the target height
+    if data.target.root in store.block_states:
+        target_state = store.block_states[data.target.root]
+        if (
+            target_state.target_checkpoint.root != Root()
+            or target_state.target_checkpoint.height != data.target.height
+        ):
+            raise GossipReject("target block did not open the target height")
 
-    # [REJECT] The target block passes validation
-    if data.target.root not in store.block_states:
-        raise GossipReject("target block failed validation")
+    head = get_head(store)
+    state = store.block_states[head.root]
+    target = state.target_checkpoint.copy()
+    if target.root == Root():
+        # The head block is the target of the head state's height
+        target.root = head.root
 
-    state = store.block_states[get_head(store).root]
-
-    # [IGNORE] The finalized block is an ancestor of the target block
-    if not is_finalized_ancestor(store, state, data.target.root):
-        raise GossipIgnore("finalized block is not an ancestor of the target block")
+    # [IGNORE] The attestation is for the current target of the head state
+    # (MAY be queued until the target block is retrieved)
+    if data.target != target:
+        raise GossipIgnore("attestation is not for the current target")
 
     # [REJECT] The attester is a member of the committee
-    # (the committees and the signature domain are those of the target's epoch)
-    epoch = compute_epoch_at_slot(store.blocks[data.target.root].slot)
+    # (the head state descends from the target, so it has the committees and
+    # signature domain of the target's epoch)
+    epoch = get_attestation_epoch(state)
     committee = get_attestation_committee(state, epoch, committee_index)
     if attester_index not in committee:
         raise GossipReject("attester is not a member of the committee")
