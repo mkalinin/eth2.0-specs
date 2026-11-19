@@ -208,6 +208,7 @@
     - [Parent execution payload](#parent-execution-payload)
       - [Modified `apply_parent_execution_payload`](#modified-apply_parent_execution_payload)
     - [Height events](#height-events)
+      - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
       - [New `advance_height`](#new-advance_height)
 
@@ -681,7 +682,11 @@ the weights still equals `WEIGHT_DENOMINATOR`.
 | ------------------------- | -------------------- |
 | `PENDING_FINALITY_WINDOW` | `Uint64(2**1)` (= 2) |
 
-*Note*: `PENDING_FINALITY_WINDOW` must be at least 2.
+*Note*: `PENDING_FINALITY_WINDOW` must be at least 2. The FG client reads its
+finality pair from the pending justifications of the state in which its source
+entered the height. When the previous height is not justified, it offers the
+newest pending justification its signing record permits, and an older one when
+the record rules out the newest, so the state keeps the older one too.
 
 ### Rounds
 
@@ -3633,7 +3638,23 @@ def apply_parent_execution_payload(
 
 #### Height events
 
+##### New `is_previous_height_justified`
+
+```python
+def is_previous_height_justified(state: BeaconState) -> bool:
+    """
+    Check if the chain entered the current height by justifying the previous one.
+    """
+    justified_height = state.justified_checkpoint.height
+    return justified_height > 0 and justified_height + 1 == state.target_checkpoint.height
+```
+
 ##### New `process_height_events`
+
+*Note*: A target quorum justifies the current height only if the previous height
+is not justified or is already finalized. Otherwise the height waits for its
+predecessor, and a quorum of progress flags can still advance it after the
+timeout delay.
 
 ```python
 def process_height_events(state: BeaconState) -> None:
@@ -3650,7 +3671,10 @@ def process_height_events(state: BeaconState) -> None:
         ]
     )
 
-    if has_quorum(state, state.target_participation):
+    if has_quorum(state, state.target_participation) and (
+        not is_previous_height_justified(state)
+        or state.finalized_checkpoint.height == state.justified_checkpoint.height
+    ):
         state.justified_checkpoint = state.target_checkpoint
         # Keep only the newest pending justifications
         if len(state.pending_finality) == PENDING_FINALITY_WINDOW:

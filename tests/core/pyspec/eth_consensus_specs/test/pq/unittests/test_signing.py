@@ -25,12 +25,22 @@ def checkpoint(spec, height, root_byte):
     return spec.HeightCheckpoint(height=height, root=spec.Root(bytes([root_byte]) * 32))
 
 
-@pytest.mark.parametrize("justify_target", [False, True])
-def test_repeated_target_suppresses_duplicate(spec, record, justify_target):
+def entry_state(spec, height, justified=None, pending=()):
+    """The state in which a chain entered ``height``."""
+    return spec.BeaconState(
+        target_checkpoint=spec.HeightCheckpoint(height=height),
+        justified_checkpoint=justified or spec.HeightCheckpoint(),
+        pending_finality=spec.PendingFinalities(
+            data=[spec.PendingFinality(checkpoint=c) for c in pending]
+        ),
+    )
+
+
+def test_repeated_target_suppresses_duplicate(spec, record):
     target = checkpoint(spec, 1, 1)
     empty = spec.HeightCheckpoint.empty()
-    finalized_height = spec.Height(0)
-    data = spec.get_finality_attestation_data(record, target, empty, finalized_height)
+    entry = entry_state(spec, 1)
+    data = spec.get_finality_attestation_data(record, target, entry)
     assert data is not None
     assert data.target == target
     assert not data.timeout
@@ -41,39 +51,36 @@ def test_repeated_target_suppresses_duplicate(spec, record, justify_target):
     assert record.entries == {target.height: {target.root}}
     assert record.timeouts == {}
     assert record.finality_locks == {}
-    justified = target if justify_target else empty
-    assert spec.get_finality_attestation_data(record, target, justified, finalized_height) is None
+    assert spec.get_finality_attestation_data(record, target, entry) is None
 
 
 def test_distinct_targets_timeout_and_suppress_finality(spec, record):
     first = checkpoint(spec, 1, 1)
     second = checkpoint(spec, 1, 2)
     third = checkpoint(spec, 1, 3)
-    empty = spec.HeightCheckpoint.empty()
-    finalized_height = spec.Height(0)
-    data = spec.get_finality_attestation_data(record, first, empty, finalized_height)
+    entry = entry_state(spec, 1)
+    data = spec.get_finality_attestation_data(record, first, entry)
     assert data is not None
     spec.record_finality_attestation(record, data, spec.Round(len(record.rounds)))
 
-    assert spec.get_finality_vote(record, first, finalized_height) == first
-    assert spec.get_finality_vote(record, second, finalized_height) == empty
-    data = spec.get_finality_attestation_data(record, second, second, finalized_height)
+    assert spec.is_finality_pair_permitted(record, first)
+    assert not spec.is_finality_pair_permitted(record, second)
+    data = spec.get_finality_attestation_data(record, second, entry)
     assert data is not None
     assert data.target == second
     assert data.timeout
-    assert data.finality == empty
     spec.record_finality_attestation(record, data, spec.Round(len(record.rounds)))
 
     assert record.targets == {first.height: first.root}
     assert record.timeouts == {first.height: {second.root}}
     assert record.entries == {first.height: {first.root, second.root}}
-    assert spec.get_finality_vote(record, first, finalized_height) == empty
-    assert spec.get_finality_vote(record, second, finalized_height) == empty
-    assert spec.get_height_vote(record, first, empty) == (first, True)
+    assert not spec.is_finality_pair_permitted(record, first)
+    assert not spec.is_finality_pair_permitted(record, second)
+    assert spec.get_height_vote(record, first) == (first, True)
     for target in (first, second):
-        assert spec.get_finality_attestation_data(record, target, empty, finalized_height) is None
+        assert spec.get_finality_attestation_data(record, target, entry) is None
 
-    data = spec.get_finality_attestation_data(record, third, empty, finalized_height)
+    data = spec.get_finality_attestation_data(record, third, entry)
     assert data is not None
     assert data.target == third
     assert data.timeout
@@ -86,44 +93,57 @@ def test_finality_lock_allows_same_root_and_rejects_distinct_root(spec, record):
     conflicting = checkpoint(spec, 1, 2)
     target = checkpoint(spec, 2, 3)
     empty = spec.HeightCheckpoint.empty()
-    finalized_height = spec.Height(0)
-    data = spec.get_finality_attestation_data(record, target, locked, finalized_height)
+    data = spec.get_finality_attestation_data(record, target, entry_state(spec, 2, locked))
     assert data is not None
     assert data.finality == locked
     spec.record_finality_attestation(record, data, spec.Round(len(record.rounds)))
     assert record.finality_locks == {locked.height: locked.root}
 
-    assert spec.get_finality_vote(record, locked, finalized_height) == locked
-    assert spec.get_finality_vote(record, conflicting, finalized_height) == empty
     next_target = checkpoint(spec, 3, 4)
-    data = spec.get_finality_attestation_data(record, next_target, locked, finalized_height)
+    # A pending justification at the locked height is offered only for the
+    # locked root
+    data = spec.get_finality_attestation_data(
+        record, next_target, entry_state(spec, 3, locked, pending=[locked])
+    )
     assert data is not None
     assert data.finality == locked
-    data = spec.get_finality_attestation_data(record, next_target, conflicting, finalized_height)
+    data = spec.get_finality_attestation_data(
+        record, next_target, entry_state(spec, 3, conflicting, pending=[conflicting])
+    )
     assert data is not None
     assert data.finality == empty
 
-    assert spec.get_finality_attestation_data(record, conflicting, empty, finalized_height) is None
-    data = spec.get_finality_attestation_data(record, locked, empty, finalized_height)
+    entry = entry_state(spec, 1)
+    assert spec.get_finality_attestation_data(record, conflicting, entry) is None
+    data = spec.get_finality_attestation_data(record, locked, entry)
     assert data is not None
     assert data.target == locked
     assert not data.timeout
-    spec.record_finality_attestation(record, data, spec.Round(len(record.rounds)))
-    assert spec.get_finality_attestation_data(record, locked, locked, finalized_height) is None
 
 
-def test_candidate_finality_constrains_height_vote_before_removal(spec, record):
-    target = checkpoint(spec, 1, 1)
-    conflicting = checkpoint(spec, 1, 2)
-    finalized_height = spec.Height(0)
-    assert spec.get_finality_attestation_data(record, target, conflicting, finalized_height) is None
-    data = spec.get_finality_attestation_data(record, target, target, finalized_height)
-    assert data is not None
-    assert data.target == target
-    assert not data.timeout
-    assert data.finality == spec.HeightCheckpoint.empty()
-    spec.record_finality_attestation(record, data, spec.Round(len(record.rounds)))
-    assert record.finality_locks == {}
+def test_finality_pair_comes_from_entry_state(spec, record):
+    older = checkpoint(spec, 1, 1)
+    newer = checkpoint(spec, 2, 2)
+    blocked = checkpoint(spec, 3, 3)
+    empty = spec.HeightCheckpoint.empty()
+    record.timeouts[blocked.height] = {checkpoint(spec, 3, 9).root}
+
+    # The previous height is justified: the predecessor is offered, also when
+    # its pending entry has gone because a later state finalized it
+    entry = entry_state(spec, 4, blocked)
+    assert spec.get_finality_vote(record, entry) == empty
+    entry = entry_state(spec, 3, newer)
+    assert spec.get_finality_vote(record, entry) == newer
+
+    # Otherwise the newest permitted pending justification is offered, and an
+    # older one when the record rules out the newest
+    entry = entry_state(spec, 5, blocked, pending=[older, newer])
+    assert spec.get_finality_vote(record, entry) == newer
+    entry = entry_state(spec, 5, blocked, pending=[newer, blocked])
+    assert spec.get_finality_vote(record, entry) == newer
+    entry = entry_state(spec, 5, blocked, pending=[blocked])
+    assert spec.get_finality_vote(record, entry) == empty
+    assert spec.get_finality_vote(record, entry_state(spec, 1)) == empty
 
 
 def test_second_attestation_in_a_round_is_refused(spec, record):

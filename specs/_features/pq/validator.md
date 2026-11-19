@@ -671,48 +671,60 @@ assigned slot and staggered committee schedule.
 
 #### Attestation data
 
-First, obtain `source` and `head` from `get_ac_frame(store)` at or after the
-support cutoff. For a joined node, `source` is the deepest viable effective live
+First, obtain `source` from `get_ac_frame(store)` at or after the support
+cutoff. For a joined node, `source` is the deepest viable effective live
 fast-lock node whose confirmation slot is at least the current slot minus two.
 Slow locks do not provide FG sources. If `source` is `None`, the validator does
 not attest.
 
-Let `source_state` and `head_state` be the states after processing `source` and
-`head`, respectively:
+Let `source_state` be the state after processing `source`:
 
 - Let `target` be a copy of `source_state.target_checkpoint`.
-- Let `justified = head_state.justified_checkpoint`.
-- Let `finalized_height = head_state.finalized_checkpoint.height`.
 
 If `target.root == Root()` because `source` advanced the height, set
 `target.root = source.root`.
 
-*Note*: The height vote comes from the source state. The finality pair comes
-from the head state.
+Let `entry_state` be the state after processing the block `target.root`, the
+state in which the chain of `source` entered the height of `target`.
+
+*Note*: Both the height pair and the finality pair come from the chain of the
+source. The finality pair is read from `entry_state`, so it does not change
+while the source stays at the same height.
 
 ##### Finality pair
 
-The validator selects the finality pair using `get_finality_vote`:
+The validator selects the finality pair using `get_finality_vote`. When the
+previous height is justified, it offers that justification, also when a later
+state has finalized it. Otherwise it offers the newest pending justification of
+`entry_state` that its record permits.
 
 ```python
-def get_finality_vote(
-    record: FinalitySigningRecord,
-    justified: HeightCheckpoint,
-    finalized_height: Height,
-) -> HeightCheckpoint:
-    height, root = justified.height, justified.root
-    if height <= finalized_height:
-        return HeightCheckpoint.empty()
+def is_finality_pair_permitted(record: FinalitySigningRecord, checkpoint: HeightCheckpoint) -> bool:
+    height, root = checkpoint.height, checkpoint.root
     previous_target = record.targets.get(height)
     if previous_target is not None and previous_target != root:
-        return HeightCheckpoint.empty()
+        return False
     if not record.timeouts.get(height, set()) <= {root}:
-        return HeightCheckpoint.empty()
+        return False
     lock = record.finality_locks.get(height)
-    if lock is not None and lock != root:
-        return HeightCheckpoint.empty()
-    return justified.copy()
+    return lock is None or lock == root
 ```
+
+```python
+def get_finality_vote(record: FinalitySigningRecord, entry_state: BeaconState) -> HeightCheckpoint:
+    if is_previous_height_justified(entry_state):
+        justified = entry_state.justified_checkpoint
+        if is_finality_pair_permitted(record, justified):
+            return justified.copy()
+        return HeightCheckpoint.empty()
+    for pending in reversed(entry_state.pending_finality):
+        if is_finality_pair_permitted(record, pending.checkpoint):
+            return pending.checkpoint.copy()
+    return HeightCheckpoint.empty()
+```
+
+*Note*: Every pending justification of `entry_state` and its justified
+checkpoint are below the height of `target`.
 
 ##### Height pair
 
@@ -720,18 +732,12 @@ The validator selects the height pair using `get_height_vote`:
 
 ```python
 def get_height_vote(
-    record: FinalitySigningRecord,
-    target: HeightCheckpoint,
-    finality: HeightCheckpoint,
+    record: FinalitySigningRecord, target: HeightCheckpoint
 ) -> tuple[HeightCheckpoint, bool] | None:
     height, root = target.height, target.root
     if height == 0 or root == Root():
         return None
-
     lock = record.finality_locks.get(height)
-    if finality != HeightCheckpoint.empty() and finality.height == height:
-        lock = finality.root
-
     if lock is not None and lock != root:
         return None
     if height in record.timeouts:
@@ -742,27 +748,20 @@ def get_height_vote(
     return target.copy(), False
 ```
 
-*Note*: The candidate finality pair constrains the height vote before it is
-removed, if necessary, by `get_finality_attestation_data` below.
-
 ##### Construct data
 
 Set `attestation_data` to
-`get_finality_attestation_data(record, target, justified, finalized_height)`. If
-it returns `None`, the validator sends no new attestation.
+`get_finality_attestation_data(record, target, entry_state)`. If it returns
+`None`, the validator sends no new attestation.
 
 *Note*: The duplicate-vote checks suppress the entire attestation, including any
 new finality pair.
 
 ```python
 def get_finality_attestation_data(
-    record: FinalitySigningRecord,
-    target: HeightCheckpoint,
-    justified: HeightCheckpoint,
-    finalized_height: Height,
+    record: FinalitySigningRecord, target: HeightCheckpoint, entry_state: BeaconState
 ) -> AttestationData | None:
-    finality = get_finality_vote(record, justified, finalized_height)
-    vote = get_height_vote(record, target, finality)
+    vote = get_height_vote(record, target)
     if vote is None:
         return None
     target, timeout = vote
@@ -771,9 +770,7 @@ def get_finality_attestation_data(
     if (not timeout and len(entries) > 0) or target.root in entries:
         return None
 
-    if finality != HeightCheckpoint.empty() and target.height <= finality.height:
-        finality = HeightCheckpoint.empty()
-
+    finality = get_finality_vote(record, entry_state)
     return AttestationData(target=target, timeout=Boolean(timeout), finality=finality)
 ```
 

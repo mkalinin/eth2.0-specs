@@ -664,7 +664,7 @@ def test_restart_waits_for_full_previous_slot(spec, tree, offset):
     assert spec.get_ac_proposal(store) is None
     assert spec.get_ac_vote_head(store) is None
     spec.on_tick(store, at_slot(spec, 11) + spec.get_support_cutoff_ms())
-    assert spec.get_ac_frame(store)[0] is None
+    assert spec.get_ac_frame(store) is None
     assert store.latest_confirmed == nodes["A"]
     spec.on_tick(store, at_slot(spec, 12) + spec.get_head_vote_due_ms())
     assert spec.is_ac_joined(store) == (offset == 0)
@@ -687,7 +687,7 @@ def test_fg_source_requires_recent_live_fast_lock(spec, tree, age, fast, expiry,
     store, nodes = tree
     store.locks = {lock(spec, nodes["A"], slot=11 - age, fast=fast, expiry=expiry)}
     spec.update_confirmation(store, spec.Slot(10))
-    assert spec.get_ac_frame(store)[0] == (nodes[expected] if expected else None)
+    assert spec.get_ac_frame(store) == (nodes[expected] if expected else None)
 
 
 def test_fg_source_uses_viable_lock_ancestor(spec, tree):
@@ -695,7 +695,7 @@ def test_fg_source_uses_viable_lock_ancestor(spec, tree):
     store.locks = {lock(spec, nodes["A1"], slot=10)}
     store.max_height = spec.Height(2)
     store.block_states[nodes["B1"].root].target_checkpoint.height = spec.Height(2)
-    assert spec.get_ac_frame(store)[0] == nodes["P"]
+    assert spec.get_ac_frame(store) == nodes["P"]
 
 
 @pytest.mark.parametrize("vote_slot", [10, 11])
@@ -885,7 +885,7 @@ def test_optimistic_threshold_cutoff_and_veto(
         spec.update_optimistic_confirmation(store)
         assert {item.expiry_slot for item in store.locks if item.slot == 11} == {expiry}
         store.time_ms = at_slot(spec, 11) + spec.get_support_cutoff_ms()
-        assert spec.get_ac_frame(store)[0] == nodes["B" if conflict else expected]
+        assert spec.get_ac_frame(store) == nodes["B" if conflict else expected]
 
 
 def test_optimistic_equivocator_counts_once_per_candidate(spec, tree):
@@ -907,7 +907,7 @@ def test_optimistic_equivocator_counts_once_per_candidate(spec, tree):
     store.time_ms = at_slot(spec, 12) + spec.get_support_cutoff_ms()
     spec.update_confirmation(store, spec.Slot(11))
     assert store.saved_confirmations[11] == nodes["A"]
-    assert spec.get_ac_frame(store)[0] == nodes["A"]
+    assert spec.get_ac_frame(store) == nodes["A"]
 
 
 def test_queued_vote_with_changed_slot_committee_does_not_abort_tick(spec, tree):

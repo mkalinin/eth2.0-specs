@@ -2329,12 +2329,10 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
 
 ### New `get_ac_frame`
 
-*Notes*: At or after the support cutoff, returns the FG confirmation node and
-the head selected using the current slot's local vote view.
-
-For a joined node, the FG confirmation node is the deepest viable effective live
-fast-lock node whose confirmation slot is at least the current slot minus two,
-or `None` if no such node exists. Slow locks do not provide FG sources.
+*Notes*: At or after the support cutoff, returns the FG confirmation node. For a
+joined node, it is the deepest viable effective live fast-lock node whose
+confirmation slot is at least the current slot minus two, or `None` if no such
+node exists. Slow locks do not provide FG sources.
 
 The AC frame is used by validators at scheduled FG duties. Each duty reads the
 currently eligible source; publication is deduplicated by each validator's
@@ -2342,40 +2340,23 @@ persistent signing record rather than a node-level source watermark. A later
 duty may therefore read a source equal to or ancestral to an earlier source.
 
 ```python
-def get_ac_frame(store: Store) -> tuple[ForkChoiceNode | None, ForkChoiceNode]:
+def get_ac_frame(store: Store) -> ForkChoiceNode | None:
     assert get_time_into_slot_ms(store) >= get_support_cutoff_ms()
+
+    if not is_ac_joined(store):
+        return None
 
     current_slot = get_current_slot(store)
     fg_frame = get_fg_frame(store)
-    votes, support_votes = get_combined_local_view(
-        store,
-        current_slot,
-        receipt_threshold_ms=INFINITE_TIME_MS,
-        resolution_threshold_ms=INFINITE_TIME_MS,
-    )
-    head = get_head_in_tree(
-        store=store,
-        fg_frame=fg_frame,
-        tree=fg_frame.tree,
-        votes=votes,
-        support_votes=support_votes,
-        slot=current_slot,
-    )
-
-    if not is_ac_joined(store):
-        return None, head
-
     viable_subtree = get_viable_subtree(store, fg_frame, fg_frame.tree)
     candidates = {
         lock.node
         for lock in get_live_locks(store, fg_frame, store.time_ms)
         if lock.fast and current_slot <= lock.slot + 2 and lock.node in viable_subtree
     }
-    if len(candidates) > 0:
-        fg_confirmed = get_deepest_node(store, candidates)
-        return fg_confirmed, head
-    else:
-        return None, head
+    if len(candidates) == 0:
+        return None
+    return get_deepest_node(store, candidates)
 ```
 
 ### New `get_confirmed_execution_block_hash`
