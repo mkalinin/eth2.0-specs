@@ -16,6 +16,7 @@ from eth_consensus_specs.test.gloas.block_processing.test_process_payload_attest
 )
 from eth_consensus_specs.test.helpers.attestations import (
     get_max_attestations,
+    get_min_attestation_inclusion_delay,
     get_valid_attestation,
     sign_attestation,
 )
@@ -968,7 +969,7 @@ def test_attestations_after_missed_slot_use_applied_parent_payload_availability(
         )
 
     # Block 2 confirms Block 1's payload before processing the attestation.
-    child_slot = attestation_slot + spec.MIN_ATTESTATION_INCLUSION_DELAY
+    child_slot = attestation_slot + get_min_attestation_inclusion_delay(spec)
     block_2 = build_empty_block(spec, state, slot=child_slot)
     block_2.body.signed_execution_payload_bid.message.parent_block_hash = parent_block_hash
     block_2.body.attestations = spec.Attestations.of(matching_attestation, mismatching_attestation)
