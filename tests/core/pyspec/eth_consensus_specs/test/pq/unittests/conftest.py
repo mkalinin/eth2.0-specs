@@ -16,8 +16,10 @@ def fake_xmss(monkeypatch):
     """
     Stand in for leanXMSS, whose key generation takes minutes, with a scheme
     that binds a signature to the public key, leaf index and message, so
-    tests can still tell valid signatures from invalid ones.
+    tests can still tell valid signatures from invalid ones. XMSS is marked
+    active, so test helpers sign at the leaves that verification checks.
     """
+    monkeypatch.setattr(xmss, "xmss_active", True)
     monkeypatch.setattr(xmss, "SkToPk", xmss.StubPk)
     monkeypatch.setattr(
         xmss,

@@ -48,6 +48,19 @@ def signed_vote(spec, state, slot, payload_status=None):
     return spec.get_aggregate_head_vote(state, messages)
 
 
+def prove_head_votes(spec, state, votes):
+    # The block's proof of the signatures of its head votes, in order
+    statements = [spec.get_head_vote_statement(state, vote) for vote in votes]
+    signatures = [
+        [
+            spec.get_head_vote_signature(state, vote.data, privkeys[index])
+            for index in vote.voter_indices
+        ]
+        for vote in votes
+    ]
+    return spec.AttestationProof(data=spec.stark.ProveAggregates(statements, signatures))
+
+
 @pytest.mark.parametrize(
     ("slot", "is_supported", "valid"),
     [(2, True, True), (2, False, True), (1, True, False), (1, False, True)],
@@ -111,6 +124,7 @@ def test_operations_check_support_bits(spec, state, support, valid):
     body.head_votes.append(signed_vote(spec, state, 1))
     body.head_votes.append(signed_vote(spec, state, 2))
     body.head_vote_support = spec.HeadVoteSupport(data=support)
+    body.proof = prove_head_votes(spec, state, body.head_votes)
     if valid:
         spec.process_operations(state, body)
     else:

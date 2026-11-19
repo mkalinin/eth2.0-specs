@@ -15,6 +15,21 @@ from eth_consensus_specs.utils.ssz.bytes import Bytes16
 """
 
     @classmethod
+    def sundry_functions(cls) -> str:
+        return """
+_get_upgraded_state = get_upgraded_state
+_get_upgraded_eip8483_state = cache_this(
+    lambda state: (state.hash_tree_root(), repr(config), repr(eip8483.config)),
+    _get_upgraded_state, lru_size=64)
+
+
+def get_upgraded_state(state: eip8483.BeaconState | BeaconState) -> BeaconState:
+    if isinstance(state, eip8483.BeaconState):
+        return _get_upgraded_eip8483_state(state).copy()
+    return state
+"""
+
+    @classmethod
     def deprecate_constants(cls) -> set[str]:
         return {
             "BUILDER_PQ_REGISTRATION_REQUEST_TYPE",
@@ -197,7 +212,6 @@ from eth_consensus_specs.utils.ssz.bytes import Bytes16
             "is_valid_indexed_payload_attestation",
             "is_valid_light_client_header",
             "next_sync_committee_gindex_at_slot",
-            "notify_ptc_messages",
             "on_attestation",
             "on_attester_slashing",
             "on_fast_confirmation",
@@ -237,6 +251,7 @@ from eth_consensus_specs.utils.ssz.bytes import Bytes16
             "upgrade_lc_update_to_gloas",
             "upgrade_to_eip8483",
             "upgrade_to_heze",
+            "validate_attester_slashing_gossip",
             "validate_beacon_aggregate_and_proof_gossip",
             "validate_beacon_attestation_gossip",
             "validate_bls_to_execution_change_gossip",

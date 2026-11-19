@@ -22,6 +22,7 @@
   - [Block and sidecar proposal](#block-and-sidecar-proposal)
     - [Broadcasting `SignedProposerPreferences`](#broadcasting-signedproposerpreferences)
     - [Preparing for a `BeaconBlock`](#preparing-for-a-beaconblock)
+      - [Modified `prepare_execution_payload`](#modified-prepare_execution_payload)
     - [Constructing the `BeaconBlockBody`](#constructing-the-beaconblockbody)
       - [Randao reveal](#randao-reveal)
       - [Head votes](#head-votes)
@@ -310,6 +311,72 @@ its previous slot head-vote view.
 
 *TODO*: Specify the PQ proposal helper, including full or empty execution
 payload selection.
+
+##### Modified `prepare_execution_payload`
+
+*Note*: The fork choice store keeps the EIP-8483 payloads of blocks before the
+fork. Their execution requests have the EIP-8483 type, whose root differs from
+the commitment that a PQ block can carry (see
+[the fork document](./fork.md#upgrading-the-state)), so the proposer builds on
+the full payload of its parent only if it is a PQ payload.
+
+*TODO*: Specify how the first block after the fork builds on the full payload of
+the last block before the fork.
+
+```python
+def prepare_execution_payload(
+    # [New in Gloas:EIP7732]
+    store: Store,
+    # [New in Gloas:EIP7732]
+    head: ForkChoiceNode,
+    state: BeaconState,
+    safe_block_hash: Hash32,
+    finalized_block_hash: Hash32,
+    suggested_fee_recipient: ExecutionAddress,
+    # [New in Gloas]
+    target_gas_limit: Uint64,
+    execution_engine: ExecutionEngine,
+) -> PayloadId | None:
+    # [New in Gloas:EIP7732]
+    parent_bid = state.latest_execution_payload_bid
+    if should_build_on_full(store, head, state.slot):
+        envelope = store.payloads[head.root]
+        # [New in PQ:EIP8453]
+        # The full payload of the parent is a PQ payload
+        assert isinstance(envelope, ExecutionPayloadEnvelope)
+        # Make a copy of the state to avoid mutability issues
+        state = state.copy()
+        # Apply parent payload before computing withdrawals
+        apply_parent_execution_payload(state, envelope.execution_requests)
+        withdrawals = get_expected_withdrawals(state).withdrawals
+        head_block_hash = parent_bid.block_hash
+    else:
+        withdrawals = state.payload_expected_withdrawals
+        head_block_hash = parent_bid.parent_block_hash
+
+    # Set the forkchoice head and initiate the payload build process
+    payload_attributes = PayloadAttributes(
+        timestamp=compute_time_at_slot(state.genesis_time, state.slot),
+        prev_randao=get_randao_mix(state, get_current_epoch(state)),
+        suggested_fee_recipient=suggested_fee_recipient,
+        # [Modified in Gloas:EIP7732]
+        withdrawals=withdrawals,
+        parent_beacon_block_root=hash_tree_root(state.latest_block_header),
+        # [New in Gloas:EIP7843]
+        slot_number=state.slot,
+        # [New in Gloas]
+        target_gas_limit=target_gas_limit,
+    )
+    return execution_engine.notify_forkchoice_updated(
+        # [Modified in Gloas:EIP7732]
+        head_block_hash=head_block_hash,
+        safe_block_hash=safe_block_hash,
+        finalized_block_hash=finalized_block_hash,
+        payload_attributes=payload_attributes,
+        # [New in Gloas:EIP8070]
+        custody_columns=None,
+    )
+```
 
 #### Constructing the `BeaconBlockBody`
 

@@ -291,11 +291,25 @@ The fork is triggered at epoch `PQ_FORK_EPOCH`.
 
 ### Upgrading the fork choice store
 
-The fork choice store is not rebuilt at the fork. It keeps its blocks and their
+When its clock reaches the start of the fork slot, and before it runs any PQ
+fork choice handler, gossip validation or duty, a node converts its EIP-8483
+fork choice store with
+[`upgrade_store_to_pq`](./fork-choice.md#new-upgrade_store_to_pq). Its justified
+and finalized checkpoints become the last finalized Casper FFG checkpoint at
+height 0, matching the upgraded state. It keeps its blocks and their
 post-states, and the post-states of blocks before the fork stay EIP-8483 states.
 PQ fork choice, gossip and duties read stored states through
 [`get_block_state`](./fork-choice.md#new-get_block_state), which upgrades an
-EIP-8483 state with `get_upgraded_state`.
+EIP-8483 state with `get_upgraded_state`. A block, execution payload envelope or
+payload attestation for a block before the fork that arrives after the
+conversion is processed with the EIP-8483 rules against the block's EIP-8483
+state. Nodes stop serving and validating the EIP-8483 gossip topics at the
+conversion, since EIP-8483 gossip validation reads EIP-8483 fork choice
+checkpoints, and fetch blocks and execution payload envelopes from before the
+fork that are still missing by request/response, including
+`ExecutionPayloadEnvelopesByRoot`. Messages on the EIP-8483 topics after the
+conversion are IGNOREd, not REJECTed, and peers that still propagate them are
+not scored negatively.
 
 ### Upgrading the state
 

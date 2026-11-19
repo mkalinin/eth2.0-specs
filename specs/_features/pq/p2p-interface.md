@@ -293,6 +293,11 @@ def is_finalized_ancestor(store: Store, state: BeaconState, root: Root) -> bool:
     """
     Check if the finalized block of ``state`` is an ancestor of ``root``.
     """
+    # [New in PQ:EIP8453]
+    # Until the first Casper FFG finalization, the finalized root is the zero
+    # root, which stands for the genesis block, an ancestor of every block
+    if state.finalized_checkpoint.root == Root():
+        return True
     node = ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
     return get_ancestor(store, node, state.finalized_slot).root == state.finalized_checkpoint.root
 ```
@@ -391,6 +396,18 @@ are new:
 | `attester_slashing`       | `AttesterSlashing` (modified)  |
 | `head_vote`               | `HeadVoteMessage`              |
 | `attestation_{subnet_id}` | `SingleAttestation` (modified) |
+
+*Note*: At the PQ fork, nodes stop serving and validating the EIP-8483 topics
+when they convert their fork choice store, at the start of the fork slot (see
+[Upgrading the fork choice store](./fork.md#upgrading-the-fork-choice-store)),
+in place of the inherited guidance to unsubscribe from pre-fork topics two
+epochs after the fork. EIP-8483 gossip validation reads EIP-8483 fork choice
+checkpoints, which the converted store does not hold. Blocks and execution
+payload envelopes from before the fork that are still missing, such as the
+envelope of the last block before the fork, are fetched by request/response,
+including `ExecutionPayloadEnvelopesByRoot`. After the conversion, messages on
+the EIP-8483 topics are IGNOREd, not REJECTed, and peers that still propagate
+messages there MUST NOT be scored negatively.
 
 #### Global topics
 
@@ -678,7 +695,8 @@ def validate_proposer_slashing_gossip(
     if header_1 == header_2:
         raise GossipReject("headers are not different")
 
-    state = store.block_states[get_head(store).root]
+    # [Modified in PQ:EIP8453]
+    state = get_block_state(store, get_head(store).root)
 
     # [REJECT] The proposer index is a valid validator index
     if proposer_index >= len(state.validators):
@@ -752,7 +770,8 @@ def validate_payload_attestation_message_gossip(
     if store.blocks[data.beacon_block_root].slot != data.slot:
         raise GossipIgnore("payload attestation's block is not at the assigned slot")
 
-    state = store.block_states[get_head(store).root]
+    # [Modified in PQ:EIP8453]
+    state = get_block_state(store, get_head(store).root)
 
     # [REJECT] The validator index is valid
     if validator_index >= len(state.validators):
@@ -830,7 +849,8 @@ def validate_execution_payload_bid_gossip(
     if bid.parent_block_root not in store.block_states:
         raise GossipIgnore("bid's parent block post-state is unavailable")
 
-    state = store.block_states[bid.parent_block_root]
+    # [Modified in PQ:EIP8453]
+    state = get_block_state(store, bid.parent_block_root)
 
     # [IGNORE] The bid's slot is within the parent's proposer lookahead
     if proposal_epoch > get_current_epoch(state) + MIN_SEED_LOOKAHEAD:
@@ -968,7 +988,8 @@ def validate_proposer_preferences_gossip(
     if not is_valid_dependent_root(store, preferences.dependent_root, dependent_slot):
         raise GossipIgnore("dependent block is not a possible dependent block")
 
-    state = store.block_states[preferences.dependent_root].copy()
+    # [Modified in PQ:EIP8453]
+    state = get_block_state(store, preferences.dependent_root).copy()
     if state.slot < lookahead_start_slot:
         process_slots(state, lookahead_start_slot)
 
@@ -1068,7 +1089,7 @@ def validate_attestation_gossip(
     if data.target.height > Height(1) and data.target.root in store.block_states:
         target_state = store.block_states[data.target.root]
         if (
-            compute_epoch_at_slot(target_state.slot) < PQ_FORK_EPOCH
+            isinstance(target_state, eip8483.BeaconState)
             or target_state.target_checkpoint.root != Root()
             or target_state.target_checkpoint.height != data.target.height
         ):
