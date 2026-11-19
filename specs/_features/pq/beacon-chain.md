@@ -1637,18 +1637,19 @@ def is_double_target_vote(data_1: AttestationData, data_2: AttestationData) -> b
 
 #### New `is_conflicting_with_finality_pair`
 
+*Note*: A timeout that names the root of the finality pair does not conflict
+with it.
+
 ```python
 def is_conflicting_with_finality_pair(data: AttestationData, finality: HeightCheckpoint) -> bool:
     """
     Check if ``data`` votes at the height of the non-empty ``finality`` pair
-    without a target vote for its root.
+    for another root, as a target vote or a timeout.
     """
     if finality == HeightCheckpoint.empty():
         return False
     if data.target.height != finality.height:
         return False
-    if data.timeout:
-        return True
     if data.target.root != finality.root:
         return True
     return False
