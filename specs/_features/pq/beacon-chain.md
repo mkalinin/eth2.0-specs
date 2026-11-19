@@ -678,7 +678,7 @@ the weights still equals `WEIGHT_DENOMINATOR`.
 
 | Name                      | Value                |
 | ------------------------- | -------------------- |
-| `PENDING_FINALITY_WINDOW` | `Uint64(2**2)` (= 4) |
+| `PENDING_FINALITY_WINDOW` | `Uint64(2**1)` (= 2) |
 
 *Note*: `PENDING_FINALITY_WINDOW` must be at least 2.
 
