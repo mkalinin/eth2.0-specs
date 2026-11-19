@@ -232,14 +232,16 @@ and finalizes blocks. The available chain (AC) follows the head with head votes.
 
 The FG advances through heights, and the block that opens a height is its
 target. An attestation is a target vote or a timeout for a height, with an
-optional finality pair naming a justification not yet finalized. A quorum of
+optional finality pair naming a justification below that height. A quorum of
 target votes justifies the target and opens the next height. A quorum of target
 votes and timeouts also opens the next height, but only `TIMEOUT_DELAY_SLOTS`
 slots after the target. A target quorum justifies only if the previous height is
-not justified or is already finalized. A quorum of finality pairs finalizes a
-pending justification, before the same block checks the target quorum.
-Validators read the finality pair from the state in which the chain entered the
-height.
+not justified or is already finalized. Validators take the finality pair from
+the state in which the chain entered the height: the justified predecessor, or a
+pending justification of that state. A finality pair counts only while the
+justification it names is still pending on the chain that includes it. A quorum
+of finality pairs finalizes a pending justification, before the same block
+checks the target quorum.
 
 In every slot, a head vote committee of `HEAD_VOTE_COMMITTEE_SIZE` validators,
 sampled by effective balance, casts head votes. A block carries head votes and
