@@ -1113,6 +1113,54 @@ def test_receipt_enforces_vote_slot_payload_status(spec, tree, monkeypatch, bloc
         assert not store.locks
 
 
+@pytest.mark.parametrize("block_slot", [10, 11])
+@pytest.mark.parametrize("status", [0, 1, 2])
+@pytest.mark.parametrize("block_first", [False, True])
+def test_vote_resolution_enforces_status_in_both_arrival_orders(
+    spec, tree, block_slot, status, block_first
+):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11) + 1
+    root = nodes["A1"].root
+    store.blocks[root].slot = spec.Slot(block_slot)
+    store.payloads[root] = spec.ExecutionPayloadEnvelope()
+    store.payload_receipt_times[root] = store.time_ms
+    for state in store.block_states.values():
+        state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(1)))
+    data = spec.HeadVoteData(slot=11, beacon_block_root=root, payload_status=status)
+    state = store.block_states[nodes["F"].root]
+    message = spec.HeadVoteMessage(
+        validator_index=0,
+        data=data,
+        signature=spec.get_head_vote_signature(state, data, 1),
+    )
+    valid = (block_slot == 11) == (status == spec.PAYLOAD_STATUS_PENDING)
+    if not block_first:
+        block = store.blocks.pop(root)
+    if block_first and not valid:
+        with pytest.raises(AssertionError):
+            spec.on_head_vote_message(store, message)
+    else:
+        spec.on_head_vote_message(store, message)
+    if not block_first:
+        assert (
+            spec.get_local_view_from_p2p_messages(
+                store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+            )[1]
+            == []
+        )
+        store.blocks[root] = block
+        store.block_receipt_times[root] = store.time_ms + 1
+    view = spec.get_local_view_from_p2p_messages(
+        store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
+    )
+    assert view[1] == ([0] if valid else [])
+    tree_nodes = spec.get_fg_frame(store).tree
+    assert spec.is_usable_proposer_support(store, tree_nodes, data) == valid
+    spec.update_optimistic_confirmation(store)
+    assert (store.latest_confirmed.root == root) == valid
+
+
 def test_optimistic_payload_tie_uses_lowest_status(spec, tree):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11) + 1

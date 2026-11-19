@@ -114,6 +114,37 @@ def test_same_slot_vote_must_be_pending(spec, state, status, valid):
             spec.process_head_vote(state, vote, is_supported=True)
 
 
+@pytest.mark.parametrize("root_kind", ["older", "same_slot", "sibling"])
+@pytest.mark.parametrize("status", [0, 1, 2])
+def test_head_vote_status_uses_canonical_slot_evidence(spec, state, root_kind, status):
+    older = spec.get_block_root_at_slot(state, spec.Slot(0))
+    state.block_roots[1 % spec.SLOTS_PER_HISTORICAL_ROOT] = spec.Root(b"\x11" * 32)
+    same_slot = spec.Root(b"\x22" * 32)
+    sibling = spec.Root(b"\x33" * 32)
+    state.block_roots[2 % spec.SLOTS_PER_HISTORICAL_ROOT] = same_slot
+    root = {"older": older, "same_slot": same_slot, "sibling": sibling}[root_kind]
+    data = spec.HeadVoteData(slot=2, beacon_block_root=root, payload_status=status)
+    index = spec.get_head_vote_committee(state, spec.Slot(2))[0]
+    message = spec.HeadVoteMessage(
+        validator_index=index,
+        data=data,
+        signature=spec.get_head_vote_signature(state, data, privkeys[index]),
+    )
+    valid = root_kind == "sibling" or (root_kind == "same_slot") == (
+        status == spec.PAYLOAD_STATUS_PENDING
+    )
+    assert spec.is_valid_head_vote_message(state, message) == valid
+    aggregate = spec.HeadVote(
+        data=data,
+        voter_indices=spec.HeadVoteCommitteeIndices(data=[index]),
+    )
+    if valid:
+        spec.process_head_vote(state, aggregate, is_supported=True)
+    else:
+        with pytest.raises(AssertionError):
+            spec.process_head_vote(state, aggregate, is_supported=True)
+
+
 @pytest.mark.parametrize(
     ("support", "valid"),
     [([False, True], True), ([True, True], False), ([False], False), ([False, True, False], False)],

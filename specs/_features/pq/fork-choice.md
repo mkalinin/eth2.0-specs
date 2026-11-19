@@ -782,8 +782,11 @@ def get_vote_resolution_time(
     if block_slot > vote_slot:
         return INFINITE_TIME_MS
 
-    # Votes for a block in the vote's own slot must support PENDING
-    if block_slot == vote_slot and payload_status != PAYLOAD_STATUS_PENDING:
+    # PENDING is only for the vote's own-slot block; older blocks require a decision.
+    if block_slot == vote_slot:
+        if payload_status != PAYLOAD_STATUS_PENDING:
+            return INFINITE_TIME_MS
+    elif payload_status not in (PAYLOAD_STATUS_EMPTY, PAYLOAD_STATUS_FULL):
         return INFINITE_TIME_MS
 
     # Full votes require a verified payload
@@ -927,8 +930,8 @@ def is_usable_proposer_support(
         node in tree
         and store.blocks[node.root].slot <= data.slot
         and (
-            store.blocks[node.root].slot < data.slot
-            or data.payload_status == PAYLOAD_STATUS_PENDING
+            (store.blocks[node.root].slot == data.slot)
+            == (data.payload_status == PAYLOAD_STATUS_PENDING)
         )
     )
 ```
@@ -1798,11 +1801,7 @@ def is_valid_head_vote_message(state: BeaconState, message: HeadVoteMessage) -> 
     Return ``True`` if head vote message is valid.
     """
     # Vote must have correct payload_status
-    if message.data.payload_status not in [
-        PAYLOAD_STATUS_EMPTY,
-        PAYLOAD_STATUS_FULL,
-        PAYLOAD_STATUS_PENDING,
-    ]:
+    if not is_head_vote_payload_status_valid(state, message.data):
         return False
 
     # Validator must belong to the selected committee

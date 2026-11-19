@@ -119,6 +119,7 @@
     - [Modified `is_eligible_for_activation`](#modified-is_eligible_for_activation)
     - [Modified `is_active_builder`](#modified-is_active_builder)
     - [New `is_head_vote_same_slot`](#new-is_head_vote_same_slot)
+    - [New `is_head_vote_payload_status_valid`](#new-is_head_vote_payload_status_valid)
     - [New `has_builder_payment_quorum`](#new-has_builder_payment_quorum)
     - [New `has_quorum`](#new-has_quorum)
     - [Modified `is_in_inactivity_leak`](#modified-is_in_inactivity_leak)
@@ -1731,6 +1732,37 @@ def is_head_vote_same_slot(state: BeaconState, data: HeadVoteData) -> bool:
     return True
 ```
 
+#### New `is_head_vote_payload_status_valid`
+
+*Note*: The beacon state checks payload status against its retained canonical
+block roots. A canonical block from the vote's own slot requires PENDING; a root
+recorded at an earlier slot requires EMPTY or FULL. Non-canonical roots may name
+same-slot siblings, so their slot is checked by store-aware paths when the block
+is available. Clients may index retained roots by slot.
+
+```python
+def is_head_vote_payload_status_valid(state: BeaconState, data: HeadVoteData) -> bool:
+    if data.payload_status not in (
+        PAYLOAD_STATUS_EMPTY,
+        PAYLOAD_STATUS_FULL,
+        PAYLOAD_STATUS_PENDING,
+    ):
+        return False
+
+    oldest_slot = Slot(max(state.slot, SLOTS_PER_HISTORICAL_ROOT) - SLOTS_PER_HISTORICAL_ROOT)
+    if (
+        data.slot < state.slot
+        and (data.slot == GENESIS_SLOT or data.slot > oldest_slot)
+        and is_head_vote_same_slot(state, data)
+    ):
+        return data.payload_status == PAYLOAD_STATUS_PENDING
+    if data.payload_status == PAYLOAD_STATUS_PENDING:
+        for slot in range(oldest_slot, min(data.slot, state.slot)):
+            if get_block_root_at_slot(state, Slot(slot)) == data.beacon_block_root:
+                return False
+    return True
+```
+
 #### New `has_builder_payment_quorum`
 
 ```python
@@ -2980,27 +3012,12 @@ which seats voted for the block of their slot, to weigh builder payments. A head
 vote carries no signature, so `process_stark` verifies the signatures of all
 head votes in the block instead.
 
-*TODO*: `head_vote` gossip rejects a `PAYLOAD_STATUS_PENDING` vote for a block
-earlier than the vote's slot, and `on_head_vote_message` refuses one when that
-block is known at receipt. Such a vote is still accepted by `process_head_vote`
-in a block, by `is_usable_proposer_support` as proposer support, by
-`is_valid_head_vote_message` for a direct vote received before its block, and by
-`get_vote_resolution_time`, which resolves both block votes and direct votes.
-Either require `PAYLOAD_STATUS_EMPTY` or `PAYLOAD_STATUS_FULL` for such votes in
-these places, or document the remaining lenience as intended.
-
 ```python
 def process_head_vote(state: BeaconState, vote: HeadVote, is_supported: bool) -> None:
     data = vote.data
     assert data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= state.slot
     assert compute_epoch_at_slot(data.slot) in (get_previous_epoch(state), get_current_epoch(state))
-    assert data.payload_status in (
-        PAYLOAD_STATUS_EMPTY,
-        PAYLOAD_STATUS_FULL,
-        PAYLOAD_STATUS_PENDING,
-    )
-    if is_head_vote_same_slot(state, data):
-        assert data.payload_status == PAYLOAD_STATUS_PENDING
+    assert is_head_vote_payload_status_valid(state, data)
 
     committee = get_head_vote_committee(state, data.slot)
     assert len(vote.voter_indices) > 0
