@@ -1728,10 +1728,10 @@ def is_head_vote_same_slot(state: BeaconState, data: HeadVoteData) -> bool:
     """
     Check if ``data`` votes for the block proposed at its slot.
     """
-    if data.slot == GENESIS_SLOT:
-        return True
     if data.beacon_block_root != get_block_root_at_slot(state, data.slot):
         return False
+    if data.slot == GENESIS_SLOT:
+        return True
     if data.beacon_block_root == get_block_root_at_slot(state, data.slot - 1):
         return False
     return True
@@ -1743,7 +1743,9 @@ def is_head_vote_same_slot(state: BeaconState, data: HeadVoteData) -> bool:
 block roots. A canonical block from the vote's own slot requires PENDING; a root
 recorded at an earlier slot requires EMPTY or FULL. Non-canonical roots may name
 same-slot siblings, so their slot is checked by store-aware paths when the block
-is available. Clients may index retained roots by slot.
+is available. Clients should index retained roots by root, recording the
+earliest retained slot for each root, to avoid scanning the history for each
+vote.
 
 ```python
 def is_head_vote_payload_status_valid(state: BeaconState, data: HeadVoteData) -> bool:
@@ -1757,7 +1759,7 @@ def is_head_vote_payload_status_valid(state: BeaconState, data: HeadVoteData) ->
     oldest_slot = Slot(max(state.slot, SLOTS_PER_HISTORICAL_ROOT) - SLOTS_PER_HISTORICAL_ROOT)
     if (
         data.slot < state.slot
-        and (data.slot == GENESIS_SLOT or data.slot > oldest_slot)
+        and (data.slot > oldest_slot or (data.slot == GENESIS_SLOT and oldest_slot == GENESIS_SLOT))
         and is_head_vote_same_slot(state, data)
     ):
         return data.payload_status == PAYLOAD_STATUS_PENDING
