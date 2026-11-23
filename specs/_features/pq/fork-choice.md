@@ -855,19 +855,25 @@ def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACV
         if not block.body.head_vote_declarations:
             ready_proposal = True
             continue
-        matching = committee == get_head_vote_committee(get_block_state(store, root), vote_slot)
+        proposal_committee = get_head_vote_committee(get_block_state(store, root), vote_slot)
+        if committee is not None and committee != proposal_committee:
+            ready_proposal = True
+            continue
+        members = set(proposal_committee)
         for declaration, marked in zip(
             block.body.head_vote_declarations, block.body.head_vote_support_bits, strict=True
         ):
+            index = declaration.validator_index
+            if index not in members:
+                continue
             data = HeadVoteData(
                 slot=vote_slot,
                 beacon_block_root=declaration.beacon_block_root,
                 payload_status=declaration.payload_status,
             )
-            index = declaration.validator_index
             vote = get_ac_vote(index, data)
             evidence = signed.get(index, set())
-            if not matching or not (vote in evidence or len(evidence) == 2):
+            if not (vote in evidence or len(evidence) == 2):
                 all_held = False
                 continue
             votes.add(vote)
@@ -1796,9 +1802,9 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
 
 ### Modified `on_block`
 
-*Note*: This function is modified to update finality with the new finality
-gadget, record block receipt time and store head vote committees. Blocks no
-longer carry payload attestations.
+*Note*: On importing a PQ block, update finality, record its receipt time and
+re-evaluate optimistic confirmation and head vote preparation. PQ blocks carry
+no payload attestations.
 
 ```python
 def on_block(store: Store, signed_block: SignedBeaconBlock | eip8483.SignedBeaconBlock) -> None:
@@ -2145,8 +2151,11 @@ def get_ac_proposal(
 
 ### New `is_ac_vote_ready`
 
-*Note*: Every declaration across current-slot proposals must be held. Only one
-proposal needs all of its marked heads to be usable.
+*Note*: Only declarations by members of the proposal's previous-slot committee
+are eligible. If the signed pool has recorded a different committee for the
+slot, none of that proposal's declarations are eligible. Every eligible
+declaration across current-slot proposals must be held, and one proposal must
+have usable heads for all its marked eligible declarations.
 
 ```python
 def is_ac_vote_ready(store: Store) -> bool:

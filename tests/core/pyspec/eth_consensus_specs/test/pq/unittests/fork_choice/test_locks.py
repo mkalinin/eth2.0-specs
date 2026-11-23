@@ -544,7 +544,8 @@ def test_duty_unlock_uses_its_view(spec, tree, proposal):
         assert store.locks == {original}
 
 
-def test_voter_unlock_uses_proposer_support_once(spec, tree):
+@pytest.mark.parametrize("at_deadline", [False, True])
+def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
     store, nodes = tree
     original = lock(spec, nodes["A"])
     store.locks = {original}
@@ -553,6 +554,24 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree):
     indices = list(range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2))
     propose_votes(spec, store, nodes, [(nodes["B"], indices, True)])
     store.time_ms = at_slot(spec, 11)
+    if at_deadline:
+        # The last seat holds only B. Counting its unheld declaration for A
+        # would mark it as equivocating; dropping the whole proposal would
+        # also lose the half-committee support needed to unlock.
+        proposal.body.head_vote_declarations.append(
+            spec.HeadVoteDeclaration(
+                validator_index=indices[-1],
+                beacon_block_root=nodes["A"].root,
+                payload_status=nodes["A"].payload_status,
+            )
+        )
+        proposal.body.head_vote_support_bits.append(True)
+        store.time_ms += spec.get_head_vote_due_ms() - 1
+        assert spec.get_ac_vote_head(store) is None
+        store.time_ms += 1
+        cast, support = spec.get_proposer_view(store, spec.Slot(11))
+        assert cast == support
+        assert {v.supported_node for v in cast} == {nodes["B"]}
     head = spec.get_ac_vote_head(store)
     assert head == replace(nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING)
     assert store.locks == {replace(original, node=nodes["P"])}
@@ -655,6 +674,33 @@ def test_proposer_support_follows_bits_when_both_resolve_locally(spec, tree):
     infinite = spec.INFINITE_TIME_MS
     local_view = spec.get_combined_local_view(store, spec.Slot(10), infinite, infinite)
     assert merged_voters(spec, local_view) == ({0, 1, 2, 3}, {0, 1, 2, 3})
+
+
+def test_support_index_addresses_filtered_messages(spec, tree):
+    store, nodes = tree
+    cutoff = at_slot(spec, 11)
+    vote(spec, store, nodes["A"], 0, received=cutoff)
+    vote(spec, store, nodes["B"], 1, received=cutoff - 1)
+    messages, support = spec.get_local_view_from_p2p_messages(store, spec.Slot(10), cutoff, cutoff)
+    assert [m.validator_index for m in messages] == [1]
+    assert support == [0]
+
+
+def test_unheld_nonmember_declaration_does_not_delay_ready_sibling(spec, tree):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11)
+    propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
+    sibling = store.blocks[nodes["A1"].root]
+    sibling.slot = spec.Slot(11)
+    sibling.body.head_vote_declarations.append(
+        spec.HeadVoteDeclaration(
+            validator_index=spec.HEAD_VOTE_COMMITTEE_SIZE, beacon_block_root=spec.Root(b"\x99" * 32)
+        )
+    )
+    sibling.body.head_vote_support_bits.append(True)
+    store.block_states[nodes["A1"].root] = store.block_states[nodes["B1"].root].copy()
+    assert spec.is_ac_vote_ready(store)
+    assert merged_voters(spec, spec.get_proposer_view(store, spec.Slot(11))) == ({0}, {0})
 
 
 @pytest.mark.parametrize("offset", [0, 1])
@@ -835,11 +881,13 @@ def test_vote_readiness_waits_only_for_supported_heads(spec, tree, supported, ma
     store.blocks[nodes["B1"].root].proposer_index = 1
     if matching is None:
         del store.head_vote_committees[10]
+        store.head_vote_messages.clear()
+        store.head_vote_message_receipt_times.clear()
     elif not matching:
         store.head_vote_committees[10] = spec.HeadVoteCommittee(
             data=[1] * spec.HEAD_VOTE_COMMITTEE_SIZE
         )
-    ready = bool(matching) and not supported
+    ready = matching is False or (matching is True and not supported)
     assert spec.is_ac_vote_ready(store) == ready
     assert (spec.get_ac_vote_head(store) is not None) == ready
 

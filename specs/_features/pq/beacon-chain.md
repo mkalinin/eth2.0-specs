@@ -777,6 +777,11 @@ The reference concatenation fits at most
 
 ### New `HeadVoteDeclaration`
 
+*Note*: Each declaration occupies 41 SSZ bytes. At one declaration per seat for
+1,024 distinct mainnet participants, the declarations occupy 41,984 bytes (about
+42 kB before Snappy), excluding the support bits. Two declarations per
+participant double that budget.
+
 ```python
 class HeadVoteDeclaration(Container):
     validator_index: ValidatorIndex

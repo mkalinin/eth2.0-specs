@@ -594,15 +594,18 @@ A validator on the head vote committee of `slot` creates, signs and broadcasts a
 
 Every node attempts `get_ac_vote_head(store)` after block, payload and head-vote
 receipts and at `get_head_vote_due_ms()` into the slot, even if none of its
-validators belongs to the head vote committee. A ready current-slot proposal
-allows early preparation; otherwise preparation waits until the deadline.
-Preparation caches one head per slot and unlocks using the frozen local view
-merged with current proposals. When a new prepared head becomes available,
-assigned validators immediately sign, process locally and broadcast their vote
-once. Unselected validators do not sign, self-admit or emit a vote. Repeated
-requests in the same slot return the prepared head without unlocking again. A
-`None` result means preparation is not ready yet, the node has not joined, or
-the deadline was missed. Nodes must observe continuously from the start of the
+validators belongs to the head vote committee. Early preparation requires all
+eligible declarations across current-slot proposals in the FG tree to be held,
+and all marked eligible heads of at least one such proposal to be usable (see
+[`is_ac_vote_ready`](./fork-choice.md#new-is_ac_vote_ready)). At the deadline
+the node prepares with the held declarations, omitting the rest. Preparation
+caches one head per slot and unlocks using the frozen local view merged with
+current proposals. When a new prepared head becomes available, assigned
+validators immediately sign, process locally and broadcast their vote once.
+Unselected validators do not sign, self-admit or emit a vote. Repeated requests
+in the same slot return the prepared head without unlocking again. A `None`
+result means preparation is not ready yet, the node has not joined, or the
+deadline was missed. Nodes must observe continuously from the start of the
 previous slot after startup or restart before proposing, preparing votes,
 confirming or publishing an FG source. Validator signing records survive
 restart, including the record of head votes already signed; a validator must
