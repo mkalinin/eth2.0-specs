@@ -791,13 +791,17 @@ def record_finality_attestation(
     assert round not in record.rounds
     record.rounds.add(round)
     height, root = data.target.height, data.target.root
-    record.entries.setdefault(height, set()).add(root)
+    if height not in record.entries:
+        record.entries[height] = set()
+    record.entries[height].add(root)
     if data.finality != HeightCheckpoint.empty():
         record.finality_locks[data.finality.height] = data.finality.root
     if data.timeout:
-        record.timeouts.setdefault(height, set()).add(root)
-    else:
-        record.targets.setdefault(height, root)
+        if height not in record.timeouts:
+            record.timeouts[height] = set()
+        record.timeouts[height].add(root)
+    elif height not in record.targets:
+        record.targets[height] = root
 ```
 
 Selecting and recording the data must be serialized per validator key. The

@@ -1791,7 +1791,9 @@ def is_valid_head_vote_declarations(body: BeaconBlockBody, slot: Slot) -> bool:
         status = declaration.payload_status
         if status not in (PAYLOAD_STATUS_PENDING, PAYLOAD_STATUS_EMPTY, PAYLOAD_STATUS_FULL):
             return False
-        previous = heads.setdefault(declaration.validator_index, set())
+        if declaration.validator_index not in heads:
+            heads[declaration.validator_index] = set()
+        previous = heads[declaration.validator_index]
         head = (declaration.beacon_block_root, status)
         if head in previous or len(previous) == 2:
             return False

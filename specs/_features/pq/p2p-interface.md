@@ -638,7 +638,9 @@ def validate_head_vote_gossip(
         raise GossipReject("invalid head vote signature")
 
     # Mark this head vote as seen
-    seen.head_vote_validator_slots.setdefault(head_vote_key, set()).add(data_root)
+    if head_vote_key not in seen.head_vote_validator_slots:
+        seen.head_vote_validator_slots[head_vote_key] = set()
+    seen.head_vote_validator_slots[head_vote_key].add(data_root)
 ```
 
 ##### New `head_vote_aggregate`

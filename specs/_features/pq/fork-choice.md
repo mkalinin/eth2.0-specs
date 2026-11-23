@@ -843,9 +843,10 @@ def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACV
     vote_slot = Slot(slot - 1)
     signed: dict[ValidatorIndex, set[ACVote]] = {}
     for message in store.head_vote_messages.get(vote_slot, []):
-        signed.setdefault(message.validator_index, set()).add(
-            get_ac_vote(message.validator_index, message.data)
-        )
+        index = message.validator_index
+        if index not in signed:
+            signed[index] = set()
+        signed[index].add(get_ac_vote(index, message.data))
     committee = store.head_vote_committees.get(vote_slot)
     for root in {node.root for node in tree}:
         block = store.blocks[root]
@@ -1560,7 +1561,8 @@ def record_head_vote_message(
     store.head_vote_message_receipt_times[message_root] = store.time_ms
 
     # The first validated view supplies the committee for this slot.
-    store.head_vote_committees.setdefault(message.data.slot, committee)
+    if message.data.slot not in store.head_vote_committees:
+        store.head_vote_committees[message.data.slot] = committee
 ```
 
 ### `on_tick` helpers
