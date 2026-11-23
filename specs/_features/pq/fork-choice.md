@@ -2160,7 +2160,7 @@ have usable heads for all its marked eligible declarations.
 ```python
 def is_ac_vote_ready(store: Store) -> bool:
     """
-    Return whether a current proposal has all of its supporting heads available.
+    Return the current slot's readiness computed by ``get_declaration_view``.
     """
     _, _, ready = get_declaration_view(store, get_current_slot(store))
     return ready
@@ -2168,12 +2168,12 @@ def is_ac_vote_ready(store: Store) -> bool:
 
 ### New `get_ac_vote_head`
 
-*Note*: Prepares the head at the first ready proposal up to the head-vote
-deadline, or at the deadline if no proposal is ready. Returns `None` before
-readiness or after a missed deadline. The prepared result remains stable for the
-slot. Merges the frozen local P2P view with views from current slot proposals,
-then walks the voter's viable subtree, falling back to the full FG tree if that
-subtree is empty.
+*Note*: Prepares the head as soon as [`is_ac_vote_ready`](#new-is_ac_vote_ready)
+holds, or at the head-vote deadline without requiring readiness. Returns `None`
+before readiness or after a missed deadline. The prepared result remains stable
+for the slot. Merges the frozen local P2P view with views from current slot
+proposals, then walks the voter's viable subtree, falling back to the full FG
+tree if that subtree is empty.
 
 ```python
 def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
