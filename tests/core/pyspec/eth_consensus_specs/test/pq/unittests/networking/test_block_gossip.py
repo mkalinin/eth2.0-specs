@@ -21,7 +21,8 @@ def spec(preset, monkeypatch):
     return spec
 
 
-def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch):
+@pytest.mark.parametrize("aligned", [True, False])
+def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch, aligned):
     eip8483 = import_module(f"eth_consensus_specs.eip8483.{context.DEFAULT_TEST_PRESET}")
     balances = [eip8483.MAX_EFFECTIVE_BALANCE] * 64
     parent_state = upgrade_registered_to_pq(
@@ -38,6 +39,9 @@ def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch):
     spec.process_slots(advanced, spec.Slot(2))
     proposer = spec.get_beacon_proposer_index(advanced)
     block = spec.BeaconBlock(slot=2, proposer_index=proposer, parent_root=parent_root)
+    block.body.head_vote_declarations.append(spec.HeadVoteDeclaration(validator_index=1234))
+    if aligned:
+        block.body.head_vote_support_bits.append(True)
     bid = block.body.signed_execution_payload_bid.message
     bid.parent_block_root = parent_root
     bid.parent_block_hash = advanced.latest_block_hash
@@ -92,5 +96,9 @@ def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch):
         **{field.name: (get_origin(field.type) or field.type)() for field in fields(spec.Seen)}
     )
     time_ms = spec.compute_time_at_slot_ms(spec.Uint64(0), spec.Slot(2))
+    if not aligned:
+        with pytest.raises(spec.GossipReject, match="invalid head vote declarations"):
+            spec.validate_beacon_block_gossip(seen, store, signed, time_ms)
+        return
     spec.validate_beacon_block_gossip(seen, store, signed, time_ms)
     assert (block.slot, proposer) in seen.proposer_slots

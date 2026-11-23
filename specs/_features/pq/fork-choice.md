@@ -46,8 +46,7 @@
     - [New `get_block_and_payload_receipt_time`](#new-get_block_and_payload_receipt_time)
     - [New `get_vote_resolution_time`](#new-get_vote_resolution_time)
     - [New `get_local_view_from_p2p_messages`](#new-get_local_view_from_p2p_messages)
-    - [New `get_view_from_blocks`](#new-get_view_from_blocks)
-    - [New `get_local_view_from_blocks`](#new-get_local_view_from_blocks)
+    - [New `get_declaration_view`](#new-get_declaration_view)
     - [New `is_usable_proposer_support`](#new-is_usable_proposer_support)
     - [New `get_proposer_view`](#new-get_proposer_view)
     - [New `compute_merged_view`](#new-compute_merged_view)
@@ -74,7 +73,6 @@
     - [New `update_locks_and_confirmation`](#new-update_locks_and_confirmation)
     - [New `record_block_receipt_time`](#new-record_block_receipt_time)
     - [New `record_payload_receipt_time`](#new-record_payload_receipt_time)
-    - [New `record_head_vote_committee`](#new-record_head_vote_committee)
     - [New `record_head_vote_message`](#new-record_head_vote_message)
   - [`on_tick` helpers](#on_tick-helpers)
     - [New `update_confirmation`](#new-update_confirmation)
@@ -110,10 +108,11 @@ finality gadget (FG) through the beacon state and runs the available chain (AC)
 on head votes.
 
 Blocks no longer carry payload attestations, so the votes of the payload
-timeliness committee reach fork choice only from the wire. Head votes in a block
-carry no signature. Gossip validation checks the signature of a head vote
-message from the wire, and `process_stark` proves the signatures of the head
-votes in a block.
+timeliness committee reach fork choice only from the wire. Gossip validation
+checks the XMSS signature of a head vote message from the wire. Head vote
+aggregates in a block carry no signature, and `process_stark` proves their
+signatures; they count only for builder payments. Head vote declarations carry
+no signature and are used only if the store holds the signed vote.
 
 At the fork, a node converts its EIP-8483 store with `upgrade_store_to_pq`. The
 store keeps the blocks and post-states it holds, and the post-states of blocks
@@ -346,10 +345,8 @@ def is_ac_joined(store: Store) -> bool:
 
 *Note*: The validated block/state/payload database, FG state, AC locks and
 `latest_confirmed` survive restart. Persistent validator signing records also
-survive, including records preventing duplicate head votes. Committee duties are
-rederived from retained states. The transient AC views are reconstructed from
-retained blocks in parent order; all reconstructed receipts use restart time,
-not their pre-restart times. Sibling order is deterministic by root. No
+survive, including records preventing duplicate head votes. The signed pool is
+empty on restart. Retained blocks and payloads receive the restart time. No
 proposing, vote preparation, confirmation or FG-source publication runs during
 replay or until the joining condition holds.
 
@@ -364,16 +361,8 @@ def on_ac_restart(store: Store, time_ms: Uint64) -> None:
     store.head_vote_messages = {}
     store.head_vote_message_receipt_times = {}
     store.head_vote_committees = {}
-    store.block_receipt_times = {}
+    store.block_receipt_times = dict.fromkeys(store.blocks, time_ms)
     store.payload_receipt_times = dict.fromkeys(store.payloads, time_ms)
-    for root in sorted(store.blocks, key=lambda root: (store.blocks[root].slot, root)):
-        store.block_receipt_times[root] = time_ms
-        block = store.blocks[root]
-        # Blocks before the PQ fork carry no head votes
-        if isinstance(block, eip8483.BeaconBlock):
-            continue
-        for vote in block.body.head_votes:
-            record_head_vote_committee(store, get_block_state(store, root), vote.data)
 ```
 
 ### New `get_head_vote_due_ms`
@@ -816,7 +805,7 @@ def get_local_view_from_p2p_messages(
     vote_messages: list[HeadVoteMessage] = []
     support_indices: list[int] = []
 
-    for index, message in enumerate(store.head_vote_messages.get(vote_slot, [])):
+    for message in store.head_vote_messages.get(vote_slot, []):
         data = message.data
         message_root = hash_tree_root(message)
         message_receipt_ms = store.head_vote_message_receipt_times[message_root]
@@ -831,92 +820,64 @@ def get_local_view_from_p2p_messages(
                 get_vote_resolution_time(store, supported_node, data.slot, message_receipt_ms)
                 < resolution_threshold_ms
             ):
-                support_indices.append(index)
+                support_indices.append(len(vote_messages) - 1)
 
     return vote_messages, support_indices
 ```
 
-#### New `get_view_from_blocks`
+#### New `get_declaration_view`
 
-*Note*: A general function to build AC view from votes included in blocks.
-Clients should cache head-vote committees by slot and dependent root, reusing
-them across block votes while keeping branch-dependent committees separate.
+*Note*: A declaration is held if the signed pool contains the exact vote or two
+distinct votes by its validator for the same slot and committee. In the latter
+case the view uses the declared head, not either signed head.
 
 ```python
-def get_view_from_blocks(
-    store: Store,
-    block_slot: Slot,
-    vote_slot: Slot,
-    block_predicate: Callable[[Root], bool],
-    is_supported: Callable[[Root, HeadVote, bool], bool],
-) -> tuple[list[HeadVote], list[bool]]:
-    """
-    Return head votes for ``vote_slot`` included in blocks at ``block_slot``
-    that pass ``block_predicate``, and whether each of them is support
-    as decided by ``is_supported``.
-    """
-    vote_messages: list[HeadVote] = []
-    support: list[bool] = []
-
-    for block_root in store.blocks:
-        block = store.blocks[block_root]
-        # Filter by block slot and block test predicate
-        # (blocks before the PQ fork carry no head votes)
-        if isinstance(block, eip8483.BeaconBlock):
+def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACVote], bool]:
+    tree = get_fg_frame(store).tree
+    votes: set[ACVote] = set()
+    support: set[ACVote] = set()
+    all_held = True
+    ready_proposal = False
+    if slot == GENESIS_SLOT:
+        return votes, support, False
+    vote_slot = Slot(slot - 1)
+    signed: dict[ValidatorIndex, set[ACVote]] = {}
+    for message in store.head_vote_messages.get(vote_slot, []):
+        signed.setdefault(message.validator_index, set()).add(
+            get_ac_vote(message.validator_index, message.data)
+        )
+    committee = store.head_vote_committees.get(vote_slot)
+    for root in {node.root for node in tree}:
+        block = store.blocks[root]
+        if isinstance(block, eip8483.BeaconBlock) or block.slot != slot:
             continue
-        if block.slot == block_slot and block_predicate(block_root):
-            for vote_index, head_vote in enumerate(block.body.head_votes):
-                data = head_vote.data
-                # Only votes matching the slot's recorded committee enter AC views.
-                if (
-                    data.slot == vote_slot
-                    and data.slot in store.head_vote_committees
-                    and get_head_vote_committee(get_block_state(store, block_root), data.slot)
-                    == store.head_vote_committees[data.slot]
-                ):
-                    vote_messages.append(head_vote)
-                    proposer_support = bool(block.body.head_vote_support[vote_index])
-                    support.append(is_supported(block_root, head_vote, proposer_support))
-
-    return vote_messages, support
-```
-
-#### New `get_local_view_from_blocks`
-
-*Note*: Builds an AC view from block votes using locally observed receipt and
-resolution times.
-
-```python
-def get_local_view_from_blocks(
-    store: Store, vote_slot: Slot, receipt_threshold_ms: Uint64, resolution_threshold_ms: Uint64
-) -> tuple[list[HeadVote], list[bool]]:
-    """
-    Return votes for ``vote_slot`` indluded in blocks received before ``receipt_threshold_ms``,
-    and whether each of those votes is resolved before ``resolution_threshold_ms``.
-    """
-
-    def is_supported(block_root: Root, head_vote: HeadVote, _proposer_support: bool) -> bool:
-        data = head_vote.data
-        block_receipt_time = store.block_receipt_times[block_root]
-        supported_node = ForkChoiceNode(
-            root=data.beacon_block_root, payload_status=data.payload_status
-        )
-        # All voters in this vote support the locally resolved node
-        return (
-            get_vote_resolution_time(store, supported_node, data.slot, block_receipt_time)
-            < resolution_threshold_ms
-        )
-
-    # Restrict to blocks that are from the slot immediately after the vote slot
-    return get_view_from_blocks(
-        store,
-        vote_slot + 1,
-        vote_slot,
-        block_predicate=lambda block_root: (
-            store.block_receipt_times[block_root] < receipt_threshold_ms
-        ),
-        is_supported=is_supported,
-    )
+        ready = True
+        if not block.body.head_vote_declarations:
+            ready_proposal = True
+            continue
+        matching = committee == get_head_vote_committee(get_block_state(store, root), vote_slot)
+        for declaration, marked in zip(
+            block.body.head_vote_declarations, block.body.head_vote_support_bits, strict=True
+        ):
+            data = HeadVoteData(
+                slot=vote_slot,
+                beacon_block_root=declaration.beacon_block_root,
+                payload_status=declaration.payload_status,
+            )
+            index = declaration.validator_index
+            vote = get_ac_vote(index, data)
+            evidence = signed.get(index, set())
+            if not matching or not (vote in evidence or len(evidence) == 2):
+                all_held = False
+                continue
+            votes.add(vote)
+            if marked:
+                if is_usable_proposer_support(store, tree, data):
+                    support.add(vote)
+                else:
+                    ready = False
+        ready_proposal |= ready
+    return votes, support, all_held and ready_proposal
 ```
 
 #### New `is_usable_proposer_support`
@@ -942,27 +903,13 @@ def is_usable_proposer_support(
 known blocks. *Full* block support additionally requires a verified payload.
 
 ```python
-def get_proposer_view(
-    store: Store, block_slot: Slot, vote_slot: Slot
-) -> tuple[list[HeadVote], list[bool]]:
+def get_proposer_view(store: Store, block_slot: Slot) -> tuple[set[ACVote], set[ACVote]]:
     """
-    Return the proposer view for ``vote_slot`` from proposals made in ``block_slot``.
+    Return the held declarations and usable support of the slot's proposals.
     """
 
-    tree = get_fg_frame(store).tree
-
-    def is_supported(_block_root: Root, head_vote: HeadVote, proposer_support: bool) -> bool:
-        return proposer_support and is_usable_proposer_support(store, tree, head_vote.data)
-
-    return get_view_from_blocks(
-        store,
-        block_slot,
-        vote_slot,
-        block_predicate=lambda block_root: is_ancestor_root(
-            store, block_root, store.finalized_checkpoint.root
-        ),
-        is_supported=is_supported,
-    )
+    votes, support, _ = get_declaration_view(store, block_slot)
+    return votes, support
 ```
 
 #### New `compute_merged_view`
@@ -973,7 +920,7 @@ deduplicating votes and combining their support.
 ```python
 def compute_merged_view(
     votes_from_messages: tuple[list[HeadVoteMessage], list[int]],
-    votes_from_blocks: tuple[list[HeadVote], list[bool]],
+    votes_from_blocks: tuple[set[ACVote], set[ACVote]],
 ) -> tuple[set[ACVote], set[ACVote]]:
     """
     Return the merged vote set and its supporting subset.
@@ -988,16 +935,7 @@ def compute_merged_view(
         if index in votes_from_messages[1]:
             support_votes.add(vote)
 
-    # Update sets with block votes
-    for vote_index, block_vote in enumerate(votes_from_blocks[0]):
-        is_supported = votes_from_blocks[1][vote_index]
-        for voter_index in block_vote.voter_indices:
-            vote = get_ac_vote(voter_index, block_vote.data)
-            votes.add(vote)
-            if is_supported:
-                support_votes.add(vote)
-
-    return votes, support_votes
+    return votes | votes_from_blocks[0], support_votes | votes_from_blocks[1]
 ```
 
 #### New `get_combined_local_view`
@@ -1007,16 +945,12 @@ def get_combined_local_view(
     store: Store, slot: Slot, receipt_threshold_ms: Uint64, resolution_threshold_ms: Uint64
 ) -> tuple[set[ACVote], set[ACVote]]:
     """
-    Return the merged local vote set and supporting subset for ``slot``,
-    using the receipt and resolution thresholds for both P2P and block votes.
+    Return the signed pool's vote set and supporting subset for ``slot``.
     """
     votes_from_messages = get_local_view_from_p2p_messages(
         store, slot, receipt_threshold_ms, resolution_threshold_ms
     )
-    votes_from_blocks = get_local_view_from_blocks(
-        store, slot, receipt_threshold_ms, resolution_threshold_ms
-    )
-    return compute_merged_view(votes_from_messages, votes_from_blocks)
+    return compute_merged_view(votes_from_messages, (set(), set()))
 ```
 
 #### New `get_equivocating_indices`
@@ -1594,22 +1528,6 @@ def record_payload_receipt_time(store: Store, root: Root) -> None:
     store.payload_receipt_times[root] = store.time_ms
 ```
 
-#### New `record_head_vote_committee`
-
-*Note*: Store the head vote committee for a vote from the previous or current
-slot. The first recorded committee supplies the slot's weights. Block and P2P
-votes with another committee are excluded from AC views, while their blocks
-remain available. Per-branch committee keying is an open protocol decision.
-
-```python
-def record_head_vote_committee(store: Store, state: BeaconState, data: HeadVoteData) -> None:
-    """
-    Store head vote committee.
-    """
-    if data.slot + 1 >= get_current_slot(store):
-        store.head_vote_committees.setdefault(data.slot, get_head_vote_committee(state, data.slot))
-```
-
 #### New `record_head_vote_message`
 
 ```python
@@ -1955,10 +1873,6 @@ def on_block(store: Store, signed_block: SignedBeaconBlock | eip8483.SignedBeaco
     # Record block receipt time
     record_block_receipt_time(store, block_root)
 
-    # [New in PQ:EIP8453]
-    for vote in block.body.head_votes:
-        record_head_vote_committee(store, state, vote.data)
-
     # [Modified in PQ]
     # Removed `notify_ptc_messages`
     update_optimistic_confirmation(store)
@@ -2174,16 +2088,16 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
 ### New `get_ac_proposal`
 
 *Note*: At the start of a slot, selects the proposal head using received and
-resolved P2P votes from the previous slot. Returns the head, vote messages, and
-supporting message indices. The receipt and resolution thresholds are infinite,
-so whether a vote is support depends only on its data and the store, not on when
-the vote or its block was received. Votes with the same data are all support or
-all not, which is why a block records one support bit per head vote.
+resolved P2P votes from the previous slot. Returns the head, declarations and
+support bits. The receipt and resolution thresholds are infinite, so whether a
+vote is support depends only on its data and the store, not on when the vote or
+its block was received. The proposer declares the messages in pool order, with
+one support bit per declaration.
 
 ```python
 def get_ac_proposal(
     store: Store,
-) -> tuple[ForkChoiceNode, list[HeadVoteMessage], list[int]] | None:
+) -> tuple[ForkChoiceNode, HeadVoteDeclarations, HeadVoteSupportBits] | None:
     if not is_ac_joined(store):
         return None
     assert get_time_into_slot_ms(store) == Uint64(0)
@@ -2200,7 +2114,7 @@ def get_ac_proposal(
     )
 
     # Build the view from P2P messages only
-    votes, support_votes = compute_merged_view((vote_messages, support_indices), ([], []))
+    votes, support_votes = compute_merged_view((vote_messages, support_indices), (set(), set()))
     unlock(store, current_slot - 1, votes, support_votes)
     head = get_head_in_tree(
         store=store,
@@ -2215,52 +2129,32 @@ def get_ac_proposal(
     if head.payload_status == PAYLOAD_STATUS_PENDING:
         head = ForkChoiceNode(root=head.root, payload_status=PAYLOAD_STATUS_EMPTY)
 
-    return head, vote_messages, support_indices
+    declarations = HeadVoteDeclarations()
+    bits = HeadVoteSupportBits()
+    for message in vote_messages:
+        declarations.append(
+            HeadVoteDeclaration(
+                validator_index=message.validator_index,
+                beacon_block_root=message.data.beacon_block_root,
+                payload_status=message.data.payload_status,
+            )
+        )
+        bits.append(Boolean(get_ac_vote(message.validator_index, message.data) in support_votes))
+    return head, declarations, bits
 ```
 
 ### New `is_ac_vote_ready`
 
-*Note*: Early readiness uses the single proposer expected by the node's head
-chain for the current slot. Proposals by other branches' proposers do not
-trigger an early vote. At least one proposal from that proposer must have all
-marked support usable in the local FG tree.
+*Note*: Every declaration across current-slot proposals must be held. Only one
+proposal needs all of its marked heads to be usable.
 
 ```python
 def is_ac_vote_ready(store: Store) -> bool:
     """
     Return whether a current proposal has all of its supporting heads available.
     """
-    slot = get_current_slot(store)
-    if slot == GENESIS_SLOT or not any(block.slot == slot for block in store.blocks.values()):
-        return False
-    tree = get_fg_frame(store).tree
-    state = get_pulled_up_state(store, get_head(store).root).copy()
-    # The pulled-up state's proposer lookahead covers every slot of this epoch.
-    state.slot = slot
-    proposer_index = get_beacon_proposer_index(state)
-    for root, block in store.blocks.items():
-        proposal = ForkChoiceNode(root=root, payload_status=PAYLOAD_STATUS_PENDING)
-        if block.slot != slot or block.proposer_index != proposer_index or proposal not in tree:
-            continue
-        # Blocks before the PQ fork carry no head votes
-        if isinstance(block, eip8483.BeaconBlock):
-            continue
-        ready = True
-        for vote, support in zip(block.body.head_votes, block.body.head_vote_support, strict=True):
-            if (
-                vote.data.slot != slot - 1
-                or not support
-                or vote.data.slot not in store.head_vote_committees
-                or get_head_vote_committee(get_block_state(store, root), vote.data.slot)
-                != store.head_vote_committees[vote.data.slot]
-            ):
-                continue
-            if not is_usable_proposer_support(store, tree, vote.data):
-                ready = False
-                break
-        if ready:
-            return True
-    return False
+    _, _, ready = get_declaration_view(store, get_current_slot(store))
+    return ready
 ```
 
 ### New `get_ac_vote_head`
@@ -2300,7 +2194,7 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
         resolution_threshold_ms=view_freeze_ms,
     )
     # Proposer view
-    proposer_view = get_proposer_view(store, current_slot, current_slot - 1)
+    proposer_view = get_proposer_view(store, current_slot)
     # Merge views
     votes, support_votes = compute_merged_view(local_view, proposer_view)
     unlock(store, current_slot - 1, votes, support_votes)

@@ -388,29 +388,17 @@ leaf at index `block.slot` of its VRF tree followed by the leaf's Merkle branch.
 
 ##### Head votes
 
-Set `block.body.head_votes` to aggregates from the AC proposal view, up to
-`MAX_HEAD_VOTES`. Each aggregate must satisfy the verification conditions in
-[`process_head_vote`](./beacon-chain.md#new-process_head_vote). Votes of
-`block.slot - 1` come first. The remaining space may hold votes of earlier slots
-in the previous and current epochs that add seats for the block of their slot,
-since these weigh builder payments.
+Set `block.body.head_vote_declarations` and `block.body.head_vote_support_bits`
+to the declarations and support bits returned by
+[`get_ac_proposal`](./fork-choice.md#new-get_ac_proposal). The vote slot is
+`block.slot - 1`.
 
-Set `block.body.head_vote_support` to one bit per included aggregate, in the
-same order. Set an aggregate's bit if its votes are among the supporting votes
-of the view returned by
-[`get_ac_proposal`](./fork-choice.md#new-get_ac_proposal) at the start of the
-slot. A counted vote must be of slot `block.slot - 1`, for a block in the
-accepted tree at proposal time whose slot is no later than the vote's slot.
-Otherwise, clear the bit.
-
-*Note*: The view of `get_ac_proposal` resolves support with an infinite
-resolution threshold, so support depends only on the vote data and the store,
-not on receipt times. The voters of an aggregate share its data, so the proposer
-counts all of their votes as support or none of them. A vote for an unknown
-block may be included with its support bit cleared.
-
-*TODO*: Specify aggregate selection when the proposal view exceeds
-`MAX_HEAD_VOTES`, preserving the requirements of view merge.
+Independently select up to `MAX_HEAD_VOTES` signed aggregates that satisfy
+[`process_head_vote`](./beacon-chain.md#new-process_head_vote). Include votes
+that add uncredited seats for the canonical block of their slot, from the next
+slot through the last slot of the following epoch. Proposers may retain these
+aggregates beyond the lifetime of the fork-choice message pool. They need not
+match any declaration.
 
 ##### Attestations
 

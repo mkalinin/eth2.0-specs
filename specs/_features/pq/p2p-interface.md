@@ -200,11 +200,6 @@ def verify_block_body_operation_limits(body: BeaconBlockBody) -> None:
     # [REJECT] The head vote count is within the limit
     if len(body.head_votes) > MAX_HEAD_VOTES:
         raise GossipReject("too many head votes")
-
-    # [New in PQ:EIP8453]
-    # [REJECT] The head vote support count matches the head vote count
-    if len(body.head_vote_support) != len(body.head_votes):
-        raise GossipReject("head vote support count does not match head vote count")
 ```
 
 ### Modified `verify_execution_requests_limits`
@@ -459,6 +454,10 @@ def validate_beacon_block_gossip(
 
     # [REJECT] The block body operation counts are within their limits
     verify_block_body_operation_limits(block.body)
+    # [New in PQ:EIP8453]
+    # [REJECT] The declarations and support bits are well formed
+    if not is_valid_head_vote_declarations(block.body, block.slot):
+        raise GossipReject("invalid head vote declarations")
 
     # [REJECT] The parent execution request counts are within their limits
     verify_execution_requests_limits(block.body.parent_execution_requests)

@@ -22,7 +22,8 @@
   - [New `HeadVoteCommitteeIndices`](#new-headvotecommitteeindices)
   - [New `HeadVoteCommitteeWindow`](#new-headvotecommitteewindow)
   - [New `HeadVoteParticipation`](#new-headvoteparticipation)
-  - [New `HeadVoteSupport`](#new-headvotesupport)
+  - [New `HeadVoteDeclarations`](#new-headvotedeclarations)
+  - [New `HeadVoteSupportBits`](#new-headvotesupportbits)
   - [New `HeadVotes`](#new-headvotes)
   - [New `Height`](#new-height)
   - [New `HeightParticipation`](#new-heightparticipation)
@@ -52,6 +53,7 @@
 - [Configs](#configs)
   - [Time parameters](#time-parameters)
 - [Containers](#containers)
+  - [New `HeadVoteDeclaration`](#new-headvotedeclaration)
   - [Modified containers](#modified-containers)
     - [`Attestation`](#attestation)
     - [`AttestationData`](#attestationdata)
@@ -119,6 +121,7 @@
     - [Modified `is_slashable_attestation_data`](#modified-is_slashable_attestation_data)
     - [Modified `is_eligible_for_activation`](#modified-is_eligible_for_activation)
     - [Modified `is_active_builder`](#modified-is_active_builder)
+    - [New `is_valid_head_vote_declarations`](#new-is_valid_head_vote_declarations)
     - [New `is_head_vote_same_slot`](#new-is_head_vote_same_slot)
     - [New `is_head_vote_payload_status_valid`](#new-is_head_vote_payload_status_valid)
     - [New `has_builder_payment_quorum`](#new-has_builder_payment_quorum)
@@ -245,10 +248,12 @@ of finality pairs finalizes a pending justification, before the same block
 checks the target quorum.
 
 In every slot, a head vote committee of `HEAD_VOTE_COMMITTEE_SIZE` validators,
-sampled by effective balance, casts head votes. A block carries head votes and
-marks which of the previous slot's votes the proposer counted as support. The
-beacon state records only which seats voted for the block of their slot, to
-weigh builder payments.
+sampled by effective balance, casts head votes. A block declares the previous
+slot's votes that its proposer holds, with one support bit per declaration, and
+fork choice merges these declarations against its own pool of signed votes. A
+block also carries signed head vote aggregates of the previous and current
+epochs, and the beacon state records which of their seats voted for the block of
+their slot, to weigh builder payments.
 
 Validators cast FG attestations in rounds of `SLOTS_PER_ROUND` slots. Each
 validator sits on the attestation committee given by its index modulo
@@ -335,7 +340,10 @@ which fork choice uses as before.
 
 Attestations and head votes in a block carry no signature. A block instead
 carries one `proof` of the signatures of all its attestations and head votes,
-which replaces verifying each aggregate signature in turn.
+which replaces verifying each aggregate signature in turn. Head vote
+declarations and their support bits are not signed and add no statements to the
+`proof`; they feed only fork choice, which accepts a declaration only if it
+holds the signed vote.
 
 *TODO*: Specify how the signatures of head votes are proven. For now, the
 block's `proof` covers them together with the attestations.
@@ -522,16 +530,21 @@ class HeadVoteParticipation(Vector[HeadVoteCommitteeBits]):
     LENGTH = 2 * SLOTS_PER_EPOCH
 ```
 
-### New `HeadVoteSupport`
+### New `HeadVoteDeclarations`
 
 ```python
-class HeadVoteSupport(ProgressiveBitList):
+class HeadVoteDeclarations(ProgressiveList[HeadVoteDeclaration]):
     """
-    One bit per head vote in a beacon block, in the order of ``head_votes``,
-    set when the proposer counted that head vote as support. The proposer
-    resolves support with an infinite resolution threshold, so support depends
-    only on the vote data and the proposer's store and is the same for every
-    voter of a head vote.
+    The proposer's declarations for the previous slot.
+    """
+```
+
+### New `HeadVoteSupportBits`
+
+```python
+class HeadVoteSupportBits(ProgressiveBitList):
+    """
+    One support bit per declaration, in declaration order.
     """
 ```
 
@@ -762,6 +775,15 @@ The reference concatenation fits at most
 
 ## Containers
 
+### New `HeadVoteDeclaration`
+
+```python
+class HeadVoteDeclaration(Container):
+    validator_index: ValidatorIndex
+    beacon_block_root: Root
+    payload_status: PayloadStatus
+```
+
 ### Modified containers
 
 #### `Attestation`
@@ -813,7 +835,7 @@ class AttestationData(Container):
 
 ```python
 class BeaconBlockBody(ProgressiveContainer):
-    ACTIVE_FIELDS = active_fields(width=16, gaps=(7, 8, 9, 11))
+    ACTIVE_FIELDS = active_fields(width=17, gaps=(7, 8, 9, 11))
 
     # [Modified in PQ]
     randao_reveal: VRFProof
@@ -838,7 +860,9 @@ class BeaconBlockBody(ProgressiveContainer):
     # [New in PQ:EIP8453]
     head_votes: HeadVotes
     # [New in PQ:EIP8453]
-    head_vote_support: HeadVoteSupport
+    head_vote_support_bits: HeadVoteSupportBits
+    # [New in PQ:EIP8453]
+    head_vote_declarations: HeadVoteDeclarations
 ```
 
 #### `BeaconState`
@@ -1744,6 +1768,30 @@ def is_active_builder(state: BeaconState, builder_index: BuilderIndex) -> bool:
         # Has not initiated exit
         and builder.withdrawable_epoch == FAR_FUTURE_EPOCH
     )
+```
+
+#### New `is_valid_head_vote_declarations`
+
+```python
+def is_valid_head_vote_declarations(body: BeaconBlockBody, slot: Slot) -> bool:
+    declarations = body.head_vote_declarations
+    if len(declarations) != len(body.head_vote_support_bits):
+        return False
+    if len(declarations) > 2 * HEAD_VOTE_COMMITTEE_SIZE:
+        return False
+    if declarations and (slot == GENESIS_SLOT or compute_epoch_at_slot(slot - 1) < PQ_FORK_EPOCH):
+        return False
+    heads: dict[ValidatorIndex, set[tuple[Root, PayloadStatus]]] = {}
+    for declaration in declarations:
+        status = declaration.payload_status
+        if status not in (PAYLOAD_STATUS_PENDING, PAYLOAD_STATUS_EMPTY, PAYLOAD_STATUS_FULL):
+            return False
+        previous = heads.setdefault(declaration.validator_index, set())
+        head = (declaration.beacon_block_root, status)
+        if head in previous or len(previous) == 2:
+            return False
+        previous.add(head)
+    return True
 ```
 
 #### New `is_head_vote_same_slot`
@@ -2925,7 +2973,7 @@ def process_operations(
     # [New in PQ:EIP8453]
     assert len(body.head_votes) <= MAX_HEAD_VOTES
     # [New in PQ:EIP8453]
-    assert len(body.head_vote_support) == len(body.head_votes)
+    assert is_valid_head_vote_declarations(body, state.slot)
 
     for_ops(body.proposer_slashings, process_proposer_slashing)
     for_ops(body.attester_slashings, process_attester_slashing)
@@ -2938,9 +2986,7 @@ def process_operations(
     # [Modified in PQ]
     # Removed `process_payload_attestation`
     # [New in PQ:EIP8453]
-    for vote_index in range(len(body.head_votes)):
-        is_supported = bool(body.head_vote_support[vote_index])
-        process_head_vote(state, body.head_votes[vote_index], is_supported)
+    for_ops(body.head_votes, process_head_vote)
     # [New in PQ]
     process_stark(state, body)
 ```
@@ -3067,7 +3113,7 @@ vote carries no signature, so `process_stark` verifies the signatures of all
 head votes in the block instead.
 
 ```python
-def process_head_vote(state: BeaconState, vote: HeadVote, is_supported: bool) -> None:
+def process_head_vote(state: BeaconState, vote: HeadVote) -> None:
     data = vote.data
     assert data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= state.slot
     assert compute_epoch_at_slot(data.slot) in (get_previous_epoch(state), get_current_epoch(state))
@@ -3078,9 +3124,6 @@ def process_head_vote(state: BeaconState, vote: HeadVote, is_supported: bool) ->
     assert list(vote.voter_indices) == sorted(set(vote.voter_indices))
     for index in vote.voter_indices:
         assert index in committee
-
-    if is_supported:
-        assert data.slot == state.slot - 1
 
     # Record the seats that voted for the block of their slot
     if is_head_vote_same_slot(state, data):
