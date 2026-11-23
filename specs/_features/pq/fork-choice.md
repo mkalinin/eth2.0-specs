@@ -15,8 +15,6 @@
   - [Modified `Store`](#modified-store)
   - [Modified `get_forkchoice_store`](#modified-get_forkchoice_store)
   - [New `upgrade_store_to_pq`](#new-upgrade_store_to_pq)
-  - [New `is_ac_joined`](#new-is_ac_joined)
-  - [New `on_ac_restart`](#new-on_ac_restart)
   - [New `get_head_vote_due_ms`](#new-get_head_vote_due_ms)
   - [New `get_support_cutoff_ms`](#new-get_support_cutoff_ms)
   - [New `get_view_freeze_ms`](#new-get_view_freeze_ms)
@@ -211,7 +209,6 @@ class Store:
     head_vote_message_receipt_times: dict[Root, Uint64]
     head_vote_committees: dict[Slot, HeadVoteCommittee]
     prepared_head_vote: tuple[Slot, ForkChoiceNode] | None = None
-    restart_time_ms: Uint64 | None = None
     pending_head_votes: list[tuple[HeadVoteMessage, HeadVoteCommittee]] = field(
         default_factory=list
     )
@@ -220,14 +217,10 @@ class Store:
 ### Modified `get_forkchoice_store`
 
 *Note*: The caller trusts the anchor block as justified and finalized at its
-post-state’s target height. A node observing from genesis may omit `time_ms`. A
-node bootstrapping from a weak-subjectivity anchor supplies its current wall
-clock time and waits for the joining condition before performing AC duties.
+post-state’s target height. The store's clock starts at the anchor state's slot.
 
 ```python
-def get_forkchoice_store(
-    anchor_state: BeaconState, anchor_block: BeaconBlock, time_ms: Uint64 | None = None
-) -> Store:
+def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -> Store:
     assert anchor_block.state_root == hash_tree_root(anchor_state)
     anchor_root = hash_tree_root(anchor_block)
     # [New in PQ:EIP8453]
@@ -239,14 +232,7 @@ def get_forkchoice_store(
     justified_checkpoint = HeightCheckpoint(height=anchor_height, root=anchor_root)
     finalized_checkpoint = HeightCheckpoint(height=anchor_height, root=anchor_root)
     genesis_time_ms = seconds_to_milliseconds(anchor_state.genesis_time)
-    anchor_time_ms = compute_time_at_slot_ms(genesis_time_ms, anchor_state.slot)
-    if time_ms is None:
-        assert anchor_state.slot == GENESIS_SLOT
-        time_ms = anchor_time_ms
-        restart_time_ms = None
-    else:
-        assert time_ms >= anchor_time_ms
-        restart_time_ms = time_ms
+    time_ms = compute_time_at_slot_ms(genesis_time_ms, anchor_state.slot)
     return Store(
         time_ms=time_ms,
         genesis_time_ms=genesis_time_ms,
@@ -272,7 +258,6 @@ def get_forkchoice_store(
         head_vote_messages={},
         head_vote_message_receipt_times={},
         head_vote_committees={},
-        restart_time_ms=restart_time_ms,
     )
 ```
 
@@ -324,45 +309,6 @@ def upgrade_store_to_pq(pre: eip8483.Store) -> Store:
         head_vote_message_receipt_times={},
         head_vote_committees={},
     )
-```
-
-### New `is_ac_joined`
-
-```python
-def is_ac_joined(store: Store) -> bool:
-    """
-    Return whether the node has observed continuously since the previous slot.
-    """
-    if store.restart_time_ms is None:
-        return True
-    slot = get_current_slot(store)
-    return slot > GENESIS_SLOT and store.restart_time_ms <= compute_time_at_slot_ms(
-        store.genesis_time_ms, slot - 1
-    )
-```
-
-### New `on_ac_restart`
-
-*Note*: The validated block/state/payload database, FG state, AC locks and
-`latest_confirmed` survive restart. Persistent validator signing records also
-survive, including records preventing duplicate head votes. The signed pool is
-empty on restart. Retained blocks and payloads receive the restart time. No
-proposing, vote preparation, confirmation or FG-source publication runs during
-replay or until the joining condition holds.
-
-```python
-def on_ac_restart(store: Store, time_ms: Uint64) -> None:
-    assert time_ms >= store.time_ms
-    store.time_ms = time_ms
-    store.restart_time_ms = time_ms
-    store.prepared_head_vote = None
-    store.pending_head_votes = []
-    store.saved_confirmations = {}
-    store.head_vote_messages = {}
-    store.head_vote_message_receipt_times = {}
-    store.head_vote_committees = {}
-    store.block_receipt_times = dict.fromkeys(store.blocks, time_ms)
-    store.payload_receipt_times = dict.fromkeys(store.payloads, time_ms)
 ```
 
 ### New `get_head_vote_due_ms`
@@ -1580,8 +1526,6 @@ def record_head_vote_message(
 
 ```python
 def update_confirmation(store: Store, slot: Slot) -> None:
-    if not is_ac_joined(store):
-        return
     fg_frame = get_fg_frame(store)
     support_cutoff_ms = (
         compute_time_at_slot_ms(store.genesis_time_ms, slot) + get_support_cutoff_ms()
@@ -1620,18 +1564,18 @@ def update_confirmation(store: Store, slot: Slot) -> None:
 
 #### New `update_optimistic_confirmation`
 
-*Note*: Before the half-slot cutoff, a joined node confirms the deepest node
-supported by resolved votes from at least three quarters of the current
-committee seats and conflicting with no live lock. Equal-depth candidates prefer
-a decided payload over PENDING, then the lowest root and payload status. Each
-validator counts once per candidate, including an equivocator with a vote
-extending that candidate. This writes a current-slot fast lock but does not
-write a scheduled confirmation candidate or emit an FG attestation.
+*Note*: Before the half-slot cutoff, a node confirms the deepest node supported
+by resolved votes from at least three quarters of the current committee seats
+and conflicting with no live lock. Equal-depth candidates prefer a decided
+payload over PENDING, then the lowest root and payload status. Each validator
+counts once per candidate, including an equivocator with a vote extending that
+candidate. This writes a current-slot fast lock but does not write a scheduled
+confirmation candidate or emit an FG attestation.
 
 ```python
 def update_optimistic_confirmation(store: Store) -> None:
     slot = get_current_slot(store)
-    if not is_ac_joined(store) or slot == GENESIS_SLOT:
+    if slot == GENESIS_SLOT:
         return
     if get_time_into_slot_ms(store) >= get_support_cutoff_ms():
         return
@@ -1792,9 +1736,6 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
             record_head_vote_message(store, committee, message)
             update_optimistic_confirmation(store)
             get_ac_vote_head(store)
-
-    if not is_ac_joined(store):
-        return
 
     if time_into_slot_ms == get_head_vote_due_ms():
         get_ac_vote_head(store)
@@ -2106,9 +2047,7 @@ one support bit per declaration.
 ```python
 def get_ac_proposal(
     store: Store,
-) -> tuple[ForkChoiceNode, HeadVoteDeclarations, HeadVoteSupportBits] | None:
-    if not is_ac_joined(store):
-        return None
+) -> tuple[ForkChoiceNode, HeadVoteDeclarations, HeadVoteSupportBits]:
     assert get_time_into_slot_ms(store) == Uint64(0)
 
     current_slot = get_current_slot(store)
@@ -2180,8 +2119,6 @@ tree if that subtree is empty.
 
 ```python
 def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
-    if not is_ac_joined(store):
-        return None
     current_slot = get_current_slot(store)
     if store.prepared_head_vote is not None and store.prepared_head_vote[0] == current_slot:
         return store.prepared_head_vote[1]
@@ -2235,10 +2172,10 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
 
 ### New `get_ac_frame`
 
-*Notes*: At or after the support cutoff, returns the FG confirmation node. For a
-joined node, it is the deepest viable effective live fast-lock node whose
-confirmation slot is at least the current slot minus two, or `None` if no such
-node exists. Slow locks do not provide FG sources.
+*Notes*: At or after the support cutoff, returns the FG confirmation node. It is
+the deepest viable effective live fast-lock node whose confirmation slot is at
+least the current slot minus two, or `None` if no such node exists. Slow locks
+do not provide FG sources.
 
 The AC frame is used by validators at scheduled FG duties. Each duty reads the
 currently eligible source; publication is deduplicated by each validator's
@@ -2248,9 +2185,6 @@ duty may therefore read a source equal to or ancestral to an earlier source.
 ```python
 def get_ac_frame(store: Store) -> ForkChoiceNode | None:
     assert get_time_into_slot_ms(store) >= get_support_cutoff_ms()
-
-    if not is_ac_joined(store):
-        return None
 
     current_slot = get_current_slot(store)
     fg_frame = get_fg_frame(store)

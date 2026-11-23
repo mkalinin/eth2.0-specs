@@ -146,10 +146,32 @@ def test_first_post_fork_block_import(spec, chain):
     assert_viable_with_anchor_head(spec, store, c_root)
 
 
-def test_restart_skips_heze_blocks(spec, chain):
-    store, _, _, signed_a, _, _ = chain
-    spec.on_ac_restart(store, store.time_ms)
-    assert store.block_receipt_times[signed_a.message.hash_tree_root()] == store.time_ms
+def test_anchor_start_performs_ac_duties_without_waiting(spec, chain):
+    store, _, _, signed_a, _, fork_slot = chain
+    signed_anchor = post_fork_block(spec, store, signed_a.message.hash_tree_root(), fork_slot)
+    spec.on_block(store, signed_anchor)
+    anchor = signed_anchor.message
+    root = anchor.hash_tree_root()
+    state = store.block_states[root].copy()
+    # Anchor at a height-entry block, whose target root is filled by process_slot.
+    spec.advance_height(state)
+    anchor = anchor.copy()
+    anchor.state_root = state.hash_tree_root()
+    root = anchor.hash_tree_root()
+    fresh = spec.get_forkchoice_store(state, anchor)
+    checkpoint = spec.HeightCheckpoint(height=state.target_checkpoint.height, root=root)
+    assert fresh.justified_checkpoint == checkpoint
+    assert fresh.finalized_checkpoint == checkpoint
+    assert fresh.time_ms == slot_time(spec, state.slot)
+    assert fresh.block_receipt_times == {root: fresh.time_ms}
+    head, declarations, bits = spec.get_ac_proposal(fresh)
+    assert head == spec.ForkChoiceNode(root=root, payload_status=spec.PAYLOAD_STATUS_EMPTY)
+    assert not declarations
+    assert not bits
+    spec.on_tick(fresh, slot_time(spec, fork_slot) + spec.get_head_vote_due_ms())
+    assert spec.get_ac_vote_head(fresh) == spec.ForkChoiceNode(
+        root=root, payload_status=spec.PAYLOAD_STATUS_PENDING
+    )
 
 
 def test_late_pre_fork_parent_is_imported_with_heze_rules(spec, eip8483, chain):

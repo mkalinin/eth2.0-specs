@@ -127,8 +127,8 @@ history:
   at the XMSS leaf of its round, so a second attestation in a round would reuse
   the leaf.
 
-*Note*: The record persists across restarts. Finality signing locks do not
-expire and are distinct from the temporary AC locks maintained by fork choice.
+*Note*: Finality signing locks do not expire and are distinct from the temporary
+AC locks maintained by fork choice.
 
 ## Becoming a validator
 
@@ -604,13 +604,8 @@ current proposals. When a new prepared head becomes available, assigned
 validators immediately sign, process locally and broadcast their vote once.
 Unselected validators do not sign, self-admit or emit a vote. Repeated requests
 in the same slot return the prepared head without unlocking again. A `None`
-result means preparation is not ready yet, the node has not joined, or the
-deadline was missed. Nodes must observe continuously from the start of the
-previous slot after startup or restart before proposing, preparing votes,
-confirming or publishing an FG source. Validator signing records survive
-restart, including the record of head votes already signed; a validator must
-never sign two different head votes for one slot. A missing `get_ac_proposal`
-result means the proposal duty is skipped.
+result means preparation is not ready yet or the deadline was missed. A
+validator must never sign two different head votes for one slot.
 
 #### Head vote data
 
@@ -667,10 +662,9 @@ assigned slot and staggered committee schedule.
 #### Attestation data
 
 First, obtain `source` from `get_ac_frame(store)` at or after the support
-cutoff. For a joined node, `source` is the deepest viable effective live
-fast-lock node whose confirmation slot is at least the current slot minus two.
-Slow locks do not provide FG sources. If `source` is `None`, the validator does
-not attest.
+cutoff. The `source` is the deepest viable effective live fast-lock node whose
+confirmation slot is at least the current slot minus two. Slow locks do not
+provide FG sources. If `source` is `None`, the validator does not attest.
 
 Let `source_state` be the state after processing `source`:
 
