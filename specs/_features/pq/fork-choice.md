@@ -112,6 +112,8 @@ aggregates in a block carry no signature, and `process_stark` proves their
 signatures; they count only for builder payments. Head vote declarations carry
 no signature and are used only if the store holds the signed vote.
 
+Joining and restart handling are left to clients, outside these handlers.
+
 At the fork, a node converts its EIP-8483 store with `upgrade_store_to_pq`. The
 store keeps the blocks and post-states it holds, and the post-states of blocks
 before the fork stay EIP-8483 states. PQ fork choice reads every stored state
@@ -1694,11 +1696,14 @@ def is_valid_head_vote_message(state: BeaconState, message: HeadVoteMessage) -> 
 *Note*: Updates the store time, then prepares the head vote or runs confirmation
 when scheduled at `time_ms`. Every node prepares the head vote, including nodes
 without a validator on the committee. Callers must process this tick before
-other events at the same timestamp. A delayed client timer processes every
-crossed duty timestamp in order before advancing to its wall time: the first
-physical tick at or after the deadline dispatches the deadline duty with that
-scheduled timestamp. Queued early votes carry their validated committee and are
-admitted without revalidation against a possibly changed head state.
+other events at the same timestamp. A delayed client timer dispatches crossed
+duty timestamps only from its current wall-clock slot, in order, before
+advancing to its wall time. It skips all duties in earlier slots, including when
+catching up from an old anchor: it must not call this handler for those
+historical duty timestamps. Within the current slot, the first physical tick at
+or after a deadline dispatches that duty with its scheduled timestamp. Queued
+early votes carry their validated committee and are admitted without
+revalidation against a possibly changed head state.
 
 ```python
 def on_tick(store: Store, time_ms: Uint64) -> None:

@@ -146,7 +146,8 @@ def test_first_post_fork_block_import(spec, chain):
     assert_viable_with_anchor_head(spec, store, c_root)
 
 
-def test_anchor_start_performs_ac_duties_without_waiting(spec, chain):
+@pytest.mark.parametrize("missed_slots", [0, 4])
+def test_anchor_start_performs_current_slot_duties(spec, chain, missed_slots):
     store, _, _, signed_a, _, fork_slot = chain
     signed_anchor = post_fork_block(spec, store, signed_a.message.hash_tree_root(), fork_slot)
     spec.on_block(store, signed_anchor)
@@ -164,14 +165,28 @@ def test_anchor_start_performs_ac_duties_without_waiting(spec, chain):
     assert fresh.finalized_checkpoint == checkpoint
     assert fresh.time_ms == slot_time(spec, state.slot)
     assert fresh.block_receipt_times == {root: fresh.time_ms}
+    # Catch up directly to the wall-clock slot, without replaying old duties.
+    current_slot = fork_slot + 1 + missed_slots
+    spec.on_tick(fresh, slot_time(spec, current_slot))
+    assert fresh.prepared_head_vote is None
+    assert not fresh.saved_confirmations
+    assert not fresh.locks
     head, declarations, bits = spec.get_ac_proposal(fresh)
     assert head == spec.ForkChoiceNode(root=root, payload_status=spec.PAYLOAD_STATUS_EMPTY)
     assert not declarations
     assert not bits
-    spec.on_tick(fresh, slot_time(spec, fork_slot) + spec.get_head_vote_due_ms())
-    assert spec.get_ac_vote_head(fresh) == spec.ForkChoiceNode(
-        root=root, payload_status=spec.PAYLOAD_STATUS_PENDING
+    child = post_fork_block(spec, fresh, head.root, current_slot)
+    assert child.message.slot > anchor.slot
+    assert child.message.parent_root == root
+    spec.on_block(fresh, child)
+    spec.on_tick(fresh, slot_time(spec, current_slot) + spec.get_head_vote_due_ms())
+    prepared = spec.get_ac_vote_head(fresh)
+    assert prepared == spec.ForkChoiceNode(
+        root=child.message.hash_tree_root(), payload_status=spec.PAYLOAD_STATUS_PENDING
     )
+    assert fresh.prepared_head_vote == (current_slot, prepared)
+    assert not fresh.saved_confirmations
+    assert fresh.time_ms == slot_time(spec, current_slot) + spec.get_head_vote_due_ms()
 
 
 def test_late_pre_fork_parent_is_imported_with_heze_rules(spec, eip8483, chain):
