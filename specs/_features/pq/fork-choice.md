@@ -849,8 +849,9 @@ def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACV
     committee = store.head_vote_committees.get(vote_slot)
     for root in {node.root for node in tree}:
         block = store.blocks[root]
-        if isinstance(block, eip8483.BeaconBlock) or block.slot != slot:
+        if block.slot != slot:
             continue
+        block = cast("BeaconBlock", block)
         ready = True
         if not block.body.head_vote_declarations:
             ready_proposal = True
