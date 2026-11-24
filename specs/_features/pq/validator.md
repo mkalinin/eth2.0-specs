@@ -296,8 +296,9 @@ tickets, regardless of the number it wins.
 ### Lookahead
 
 A validator can evaluate its own openings in advance for a given pair of
-descriptors and cursor. A validator's attestation committee index is fixed by
-its validator index, and the chain state determines whether it is active.
+snapshots and committee interpolation index. A validator's attestation committee
+index is fixed by its validator index, and the chain state determines whether it
+is active.
 
 *TODO*: Specify assignment lookahead and the dependent root in the PQ
 fork-choice and networking specifications.
@@ -444,11 +445,11 @@ can end eligibility after just a few slots, well before the epoch window closes.
 Proposers may retain these aggregates beyond the lifetime of the fork-choice
 message pool. They need not match any declaration.
 
-Include at most `2 * HEAD_VOTE_COMMITTEE_SIZE` credentials across all aggregates
-in the block. Recheck each credential against the including chain's duty-slot
-dynasty and lotteries. A vote with positive weight on its voted head can have
-zero weight for inclusion when the two chains have different duty-slot
-dynasties.
+Include at most `2 * HEAD_VOTE_PAYMENT_TARGET` credentials across all aggregates
+in the block, enough to meet the full payment target for two duty slots. Recheck
+each credential against the including chain's duty-slot dynasty and lotteries. A
+vote with positive weight on its voted head can have zero weight for inclusion
+when the two chains have different duty-slot dynasties.
 
 ##### Attestations
 

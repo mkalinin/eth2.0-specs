@@ -113,7 +113,7 @@
     - [New `compute_start_slot_at_round`](#new-compute_start_slot_at_round)
     - [New `compute_attestation_committee_slot`](#new-compute_attestation_committee_slot)
     - [Modified `compute_ptc`](#modified-compute_ptc)
-    - [New `compute_ac_lanes`](#new-compute_ac_lanes)
+    - [New `compute_ac_seat_indices`](#new-compute_ac_seat_indices)
   - [Predicates](#predicates)
     - [New `is_active_validator_preregistration`](#new-is_active_validator_preregistration)
     - [New `is_active_builder_preregistration`](#new-is_active_builder_preregistration)
@@ -260,11 +260,11 @@ of finality pairs finalizes a pending justification, before the same block
 checks the target quorum.
 
 AC draws fresh balance-proportional tickets every slot from two frozen balance
-descriptors. Each new dynasty switches one lane to the newer descriptor. A block
-declares the previous slot's votes that its proposer holds, with one support bit
-per declaration. Fork choice merges those declarations with signed votes. For
-epoch settlement of pending builder payments, blocks also carry head vote
-aggregates with a credential for each distinct voter.
+snapshots. Each new dynasty switches one seat index to the newer snapshot. A
+block declares the previous slot's votes that its proposer holds, with one
+support bit per declaration. Fork choice merges those declarations with signed
+votes. For epoch settlement of pending builder payments, blocks also carry head
+vote aggregates with a credential for each distinct voter.
 
 Validators cast FG attestations in rounds of `SLOTS_PER_ROUND` slots. Each
 validator sits on the attestation committee given by its index modulo
@@ -514,7 +514,7 @@ class ACSnapshots(Vector[ACSnapshot]):
 
 ```python
 class HeadVoteCredentials(List[HeadVoteCredential]):
-    LIMIT = 2 * HEAD_VOTE_COMMITTEE_SIZE
+    LIMIT = 2 * HEAD_VOTE_PAYMENT_TARGET
 ```
 
 ### New `HeadVotePaymentVoters`
@@ -741,16 +741,16 @@ parameters: the denominator is not a bound on the number of tickets on one head
 or across competing heads. In particular, the thresholds do not imply
 deterministic quorum intersection.
 
-Presets must set `HEAD_VOTE_COMMITTEE_SIZE` to a power of two so lane assignment
+Presets must set `HEAD_VOTE_COMMITTEE_SIZE` to a power of two so seat assignment
 by reduction modulo the committee size is uniform. It must also be at least
 `SLOTS_PER_EPOCH + 2` so the third descriptor can seal before the penultimate
 dynasty of each cycle.
 
-The active descriptors retain the stake in their snapshots until the dynasty
-cursor replaces them. Through a finality stall, the ticket draws remain fresh
-each slot but their weights remain fixed. Validators that exit or are slashed
-keep the tickets their frozen weights earn. New validators become eligible when
-a later descriptor captures their stake.
+The active snapshots retain their frozen stake as the committee interpolates
+between them. Through a finality stall, the ticket draws remain fresh each slot
+but their weights remain fixed. Validators that exit or are slashed keep the
+tickets their frozen weights earn. New validators become eligible when a later
+snapshot captures their stake.
 
 Eligibility uses the frozen weights, so nodes do not change a vote's weight
 based on locally seen slashing evidence or another branch's exit state. Budget
@@ -1609,20 +1609,21 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
     )
 ```
 
-#### New `compute_ac_lanes`
+#### New `compute_ac_seat_indices`
 
 For each balance increment the lottery issues `T // W` tickets plus a ticket
-with probability `(T % W) / W`, where `T` is the lane count and `W` is the
-frozen total weight. Each ticket independently chooses a lane uniformly, with
-replacement. A validator of weight `w` therefore has expected weight `w / W` in
-each lane. Repeated lane indices count as separate tickets. This is a reference
-sampler; it takes at most one Bernoulli trial per balance increment. Clients may
-cache the total weight for each snapshot.
+with probability `(T % W) / W`, where `T` is the seat count and `W` is the
+frozen total weight. Each ticket independently chooses a seat index uniformly,
+with replacement. A validator of weight `w` therefore has expected weight
+`w / W` at each seat index. Repeated seat indices count as separate tickets.
+This reference sampler takes at most one Bernoulli trial per balance increment.
+Each snapshot used for selection is assumed to have positive eligible weight.
+Clients may cache the total weight for each snapshot.
 
 ```python
-def compute_ac_lanes(
+def compute_ac_seat_indices(
     snapshot: ACSnapshot,
-    batch: Uint64,
+    snapshot_number: Uint64,
     slot: Slot,
     validator_index: ValidatorIndex,
     secret: Bytes32,
@@ -1630,14 +1631,12 @@ def compute_ac_lanes(
     if validator_index >= len(snapshot.weights):
         return []
     weight = snapshot.weights[validator_index]
-    if weight == 0:
-        return []
     total = sum(int(weight) for weight in snapshot.weights)
     base, remainder = divmod(int(HEAD_VOTE_COMMITTEE_SIZE), total)
     seed = sha256(
         DOMAIN_HEAD_VOTE_COMMITTEE
         + snapshot.seed
-        + uint_to_bytes(batch)
+        + uint_to_bytes(snapshot_number)
         + uint_to_bytes(slot)
         + uint_to_bytes(validator_index)
         + secret
@@ -2338,9 +2337,11 @@ Fork choice uses the voting head's post-state and the full duty slot, including
 when the head is older than the duty. Block inclusion uses the including chain's
 dynasty at the end of the duty slot, carried forward over empty slots. A duty
 before the previous dynasty has no weight for inclusion. For dynasty `d`, the
-cursor is `d % T` and the two descriptors have batch numbers `d // T` and
-`d // T + 1`. Rollover preserves the batch number of the descriptor that remains
-active, so its unchanged lanes retain their draws for the same slot.
+committee interpolation index is `d % T`. Seat indices below it use snapshot
+number `d // T + 1`; the others use `d // T`. The next snapshot has number
+`d // T + 2`. Storage uses the snapshot number modulo three. Draws use the full
+number, so seats staying with a snapshot retain their draws for the same slot
+across a rollover.
 
 The draft uses the registered RANDAO tree. A proposer reveal also reveals the
 proposer's AC opening for that slot, and an AC vote reveals the voter's RANDAO
@@ -2364,19 +2365,27 @@ def get_head_vote_weight(
         if slot < state.previous_dynasty_start_slot:
             return Uint64(0)
         dynasty -= 1
-    batch = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
-    cursor = dynasty % HEAD_VOTE_COMMITTEE_SIZE
+    snapshot_number = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
+    committee_interpolation_index = dynasty % HEAD_VOTE_COMMITTEE_SIZE
     snapshots = state.ac_snapshots
-    old_lanes = compute_ac_lanes(
-        snapshots[batch % len(snapshots)], batch, slot, validator_index, proof[0]
+    old_seat_indices = compute_ac_seat_indices(
+        snapshots[snapshot_number % len(snapshots)],
+        snapshot_number,
+        slot,
+        validator_index,
+        proof[0],
     )
-    weight = sum(lane >= cursor for lane in old_lanes)
-    if cursor > 0:
-        batch += 1
-        new_lanes = compute_ac_lanes(
-            snapshots[batch % len(snapshots)], batch, slot, validator_index, proof[0]
+    weight = sum(seat_index >= committee_interpolation_index for seat_index in old_seat_indices)
+    if committee_interpolation_index > 0:
+        snapshot_number += 1
+        new_seat_indices = compute_ac_seat_indices(
+            snapshots[snapshot_number % len(snapshots)],
+            snapshot_number,
+            slot,
+            validator_index,
+            proof[0],
         )
-        weight += sum(lane < cursor for lane in new_lanes)
+        weight += sum(seat_index < committee_interpolation_index for seat_index in new_seat_indices)
     return Uint64(weight)
 ```
 
@@ -2838,17 +2847,18 @@ def get_ac_weights(state: BeaconState, epoch: Epoch) -> ACWeights:
 #### New `process_ac_snapshot_updates`
 
 Seal at the end of the first full epoch after capture, using that epoch's
-completed RANDAO mix. Slashings can change eligible weights during the capture
-epoch. In its last slot, capture runs after the block's RANDAO reveal, so that
-epoch's completed mix may already be known when the weights are fixed.
+completed RANDAO mix. A slashing before capture can change which weights are
+recorded. In the last slot of the capture epoch, the block's RANDAO reveal runs
+before capture, so that epoch's completed mix may already be known when the
+weights are fixed.
 
 ```python
 def process_ac_snapshot_updates(state: BeaconState) -> None:
     if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 0:
         return
     epoch = get_current_epoch(state)
-    batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
-    snapshot = state.ac_snapshots[batch % len(state.ac_snapshots)]
+    snapshot_number = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
+    snapshot = state.ac_snapshots[snapshot_number % len(state.ac_snapshots)]
     if epoch > GENESIS_EPOCH and epoch - 1 == snapshot.capture_epoch:
         snapshot.seed = get_randao_mix(state, epoch)
 ```
@@ -3205,7 +3215,7 @@ def process_operations(
     # Removed the payload attestation limit
     # [New in PQ:EIP8453]
     assert len(body.head_votes) <= MAX_HEAD_VOTES
-    assert sum(len(vote.credentials) for vote in body.head_votes) <= 2 * HEAD_VOTE_COMMITTEE_SIZE
+    assert sum(len(vote.credentials) for vote in body.head_votes) <= 2 * HEAD_VOTE_PAYMENT_TARGET
     # [New in PQ:EIP8453]
     assert is_valid_head_vote_declarations(body, state.slot)
 
@@ -3346,8 +3356,10 @@ duty slot until the payment reaches its target. The epoch window matches the two
 epochs of payment participation kept in state. A vote must also belong to the
 current or previous dynasty of the including block's entering state. Operations
 run before dynasty advancement, so an entry block may include a duty from the
-dynasty it makes ineligible for subsequent blocks. `process_stark` verifies the
-XMSS signatures; this operation checks the Merkle openings.
+dynasty it makes ineligible for subsequent blocks. With a dynasty advance every
+two slots, this gives votes three or four slots for inclusion, depending on the
+duty slot. `process_stark` verifies the XMSS signatures; this operation checks
+the Merkle openings.
 
 ```python
 def process_head_vote(state: BeaconState, vote: HeadVote) -> None:
@@ -4050,19 +4062,20 @@ that retired entry, which can then capture weights for the next rollover.
 
 The fastest dynasty advance takes two slots: the height opened by the dynasty's
 entry block can be justified only by a later block, and the resulting pending
-justification can only be finalized by another block. From capture at cursor 1
-to cursor `T - 1` there are at least `2 * (T - 2)` slots: 1020 on mainnet and 28
-on minimal. Sealing takes at most two epochs (64 or 16 slots, respectively), so
-every block of the penultimate dynasty already carries the sealed descriptor. A
-chain entering the rollover dynasty must finalize one of those blocks. Registry
-indices are append-only on descendants of the capture block.
+justification can only be finalized by another block. As the interpolation index
+goes from 1 at capture to `T - 1`, at least `2 * (T - 2)` slots elapse: 1020 on
+mainnet and 28 on minimal. Sealing takes at most two epochs (64 or 16 slots,
+respectively), so every block of the penultimate dynasty already carries the
+sealed snapshot. A chain entering the rollover dynasty must finalize one of
+those blocks. Registry indices are append-only on descendants of the capture
+block.
 
 ```python
 def update_ac_snapshots(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
-    batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
+    snapshot_number = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
     snapshots = state.ac_snapshots
-    snapshots[batch % len(snapshots)] = ACSnapshot(
+    snapshots[snapshot_number % len(snapshots)] = ACSnapshot(
         weights=get_ac_weights(state, epoch), seed=Bytes32(), capture_epoch=epoch
     )
 ```

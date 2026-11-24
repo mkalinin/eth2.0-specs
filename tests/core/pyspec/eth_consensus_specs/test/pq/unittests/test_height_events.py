@@ -189,6 +189,7 @@ def test_one_block_finalizes_predecessor_and_justifies_height(spec, monkeypatch)
     assert data.finality == spec.HeightCheckpoint.empty()
     assert state.justified_checkpoint.height == 1
     assert state.finalized_checkpoint.height == 0
+    assert state.dynasty == 0
     entry_state = state.copy()
 
     # The votes for height 2 carry the justified predecessor as finality pair;
@@ -198,6 +199,20 @@ def test_one_block_finalizes_predecessor_and_justifies_height(spec, monkeypatch)
     assert state.finalized_checkpoint == entry_state.justified_checkpoint
     assert state.justified_checkpoint == data.target
     assert state.target_checkpoint.height == 3
+    assert state.dynasty == 1
+    assert state.dynasty_start_slot == 2
+    assert state.ac_snapshots[2].weights == state.ac_snapshots[0].weights
+
+    # Height 2's target predates dynasty 1, so its finalization does not advance it.
+    apply_block_with_client_votes(3, state.copy())
+    assert state.finalized_checkpoint.height == 2
+    assert state.dynasty == 1
+
+    apply_block_with_client_votes(4, state.copy())
+    assert state.finalized_checkpoint.height == 3
+    assert state.dynasty == 2
+    assert state.previous_dynasty_start_slot == 2
+    assert state.dynasty_start_slot == 4
 
 
 def run_heights(spec, monkeypatch, withheld, delay, keep_previous):

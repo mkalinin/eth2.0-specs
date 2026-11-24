@@ -94,15 +94,13 @@ def test_snapshot_total_can_exceed_uint16(spec, state):
     index = spec.ValidatorIndex(0)
     weight = int(spec.MAX_EFFECTIVE_BALANCE_ELECTRA // spec.EFFECTIVE_BALANCE_INCREMENT)
     assert spec.is_valid_vrf_proof(state, index, slot, proof)
-    state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[0] * 32))
-    assert spec.get_head_vote_weight(state, slot, index, proof) == 0
-    state.ac_snapshots[0].weights = spec.ACWeights(data=[weight] * 32)
+    state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[weight] * 32))
     assert spec.get_head_vote_weight(state, slot, index, proof) <= weight
 
 
 def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
-    # Disjoint snapshots make selection from the wrong side of the cursor visible.
+    # Disjoint snapshots make selection on the wrong side of the interpolation index visible.
     first = spec.ACSnapshot(weights=spec.ACWeights(data=[1, 0]))
     second = spec.ACSnapshot(weights=spec.ACWeights(data=[0, 1]))
     state.ac_snapshots[0] = first
@@ -115,9 +113,11 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     assert state.dynasty == size - 1
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(1, slot))
-    lanes = spec.compute_ac_lanes(second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0])
-    assert len(lanes) == size
-    expected = sum(lane < size - 1 for lane in lanes)
+    seat_indices = spec.compute_ac_seat_indices(
+        second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
+    )
+    assert len(seat_indices) == size
+    expected = sum(seat_index < size - 1 for seat_index in seat_indices)
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
 
     spec.process_slots(state, slot + 2)
@@ -143,10 +143,10 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     new_proof = spec.VRFProof(data=get_vrf_proof(1, state.slot))
     assert spec.get_head_vote_weight(state, state.slot, spec.ValidatorIndex(1), new_proof) == size
     assert (
-        spec.compute_ac_lanes(
+        spec.compute_ac_seat_indices(
             second, spec.Uint64(1), state.slot, spec.ValidatorIndex(1), new_proof[0]
         )
-        != lanes
+        != seat_indices
     )
 
     # The entry block can include the outgoing duty before it advances the
@@ -164,7 +164,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     block.body.head_votes.append(aggregate)
     block.body.proof = prove_head_votes(spec, state, block.body.head_votes)
 
-    # A height entry finalizing an older dynasty leaves the cursor unchanged.
+    # A height entry finalizing an older dynasty leaves the interpolation index unchanged.
     older_finality = state.copy()
     older_finality.pending_finality[0].slot = slot + 1
     spec.process_block(older_finality, block)
@@ -417,6 +417,24 @@ def test_declaration_slot_and_full_pool_bound(spec, state, monkeypatch):
     body.head_vote_support_bits.append(False)
     with pytest.raises(AssertionError):
         spec.process_operations(state, body)
+
+
+def test_block_credential_limit_counts_across_aggregates(spec, state):
+    vote = signed_vote(spec, state, 1, count=spec.HEAD_VOTE_PAYMENT_TARGET)
+    assert len(vote.credentials) == spec.HEAD_VOTE_PAYMENT_TARGET
+    body = spec.BeaconBlockBody()
+    body.head_votes.append(vote)
+    body.head_votes.append(vote)
+    body.proof = prove_head_votes(spec, state, body.head_votes)
+    spec.verify_block_body_operation_limits(body)
+    spec.process_operations(state.copy(), body)
+
+    body.head_votes.append(signed_vote(spec, state, 1, count=1))
+    body.proof = prove_head_votes(spec, state, body.head_votes)
+    with pytest.raises(spec.GossipReject, match="too many head vote credentials"):
+        spec.verify_block_body_operation_limits(body)
+    with pytest.raises(AssertionError):
+        spec.process_operations(state.copy(), body)
 
 
 def test_block_proof_covers_aggregates_not_declarations(spec, state):

@@ -164,11 +164,13 @@ def test_fork_pending_top_up_deposit(spec, phases, state):
 @with_state
 @with_meta_tags(PQ_FORK_TEST_META_TAGS)
 def test_fork_pending_top_up_deposit_not_registered(spec, phases, state):
+    register_xmss_pubkeys(spec, state, indices=[1])
     state.pending_deposits.append(
         prepare_pending_deposit(spec, 0, spec.EFFECTIVE_BALANCE_INCREMENT, signed=True)
     )
     post_state = yield from run_fork_test(phases[PQ], state)
-    assert not any(post_state.ac_snapshots[0].weights)
+    assert post_state.ac_snapshots[0].weights[0] == 0
+    assert post_state.ac_snapshots[0].weights[1] > 0
 
 
 @with_phases(phases=[EIP8483], other_phases=[PQ])

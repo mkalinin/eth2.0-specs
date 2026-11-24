@@ -200,7 +200,7 @@ def verify_block_body_operation_limits(body: BeaconBlockBody) -> None:
     # [REJECT] The head vote count is within the limit
     if len(body.head_votes) > MAX_HEAD_VOTES:
         raise GossipReject("too many head votes")
-    if sum(len(vote.credentials) for vote in body.head_votes) > 2 * HEAD_VOTE_COMMITTEE_SIZE:
+    if sum(len(vote.credentials) for vote in body.head_votes) > 2 * HEAD_VOTE_PAYMENT_TARGET:
         raise GossipReject("too many head vote credentials")
 ```
 
