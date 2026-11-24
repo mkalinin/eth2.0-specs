@@ -72,7 +72,7 @@ def prove_head_votes(spec, state, votes):
 def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(0, slot))
-    state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[1]), total_weight=1)
+    state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[1]))
     index = spec.ValidatorIndex(0)
     assert spec.get_head_vote_weight(state, slot, index, proof) == spec.HEAD_VOTE_COMMITTEE_SIZE
     state.validators[0].slashed = True
@@ -91,8 +91,8 @@ def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
 def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
     # Disjoint snapshots make selection from the wrong side of the cursor visible.
-    first = spec.ACSnapshot(weights=spec.ACWeights(data=[1, 0]), total_weight=1)
-    second = spec.ACSnapshot(weights=spec.ACWeights(data=[0, 1]), total_weight=1)
+    first = spec.ACSnapshot(weights=spec.ACWeights(data=[1, 0]))
+    second = spec.ACSnapshot(weights=spec.ACWeights(data=[0, 1]))
     state.ac_snapshots[0] = first
     state.ac_snapshots[1] = second
     state.ac_snapshots[2] = first
@@ -163,7 +163,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     spec.process_block(state, block)
     assert state.dynasty == size + 1
     assert len(state.ac_snapshots) == 3
-    assert state.ac_snapshots[0].total_weight > first.total_weight
+    assert sum(state.ac_snapshots[0].weights) > 1
     assert state.ac_snapshots[1] == second
     assert state.ac_snapshots[2] == first
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == 0

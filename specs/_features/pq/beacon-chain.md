@@ -113,6 +113,7 @@
     - [New `compute_start_slot_at_round`](#new-compute_start_slot_at_round)
     - [New `compute_attestation_committee_slot`](#new-compute_attestation_committee_slot)
     - [Modified `compute_ptc`](#modified-compute_ptc)
+    - [New `get_ac_total_weight`](#new-get_ac_total_weight)
     - [New `compute_ac_lanes`](#new-compute_ac_lanes)
   - [Predicates](#predicates)
     - [New `is_active_validator_preregistration`](#new-is_active_validator_preregistration)
@@ -178,7 +179,7 @@
     - [Modified `process_epoch`](#modified-process_epoch)
     - [Modified `process_builder_pending_payments`](#modified-process_builder_pending_payments)
     - [New `get_ac_weights`](#new-get_ac_weights)
-    - [New `seal_ac_snapshot`](#new-seal_ac_snapshot)
+    - [New `process_ac_snapshot_updates`](#new-process_ac_snapshot_updates)
     - [New `process_preregistration_expiry`](#new-process_preregistration_expiry)
     - [Modified `apply_pending_deposit`](#modified-apply_pending_deposit)
     - [Modified `process_pending_deposits`](#modified-process_pending_deposits)
@@ -225,7 +226,7 @@
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
       - [New `advance_dynasty`](#new-advance_dynasty)
-      - [New `capture_ac_snapshot`](#new-capture_ac_snapshot)
+      - [New `update_ac_snapshots`](#new-update_ac_snapshots)
       - [New `advance_height`](#new-advance_height)
 
 <!-- mdformat-toc end -->
@@ -1235,7 +1236,6 @@ class PendingFinality(Container):
 ```python
 class ACSnapshot(Container):
     weights: ACWeights
-    total_weight: Uint64
     seed: Bytes32
     capture_epoch: Epoch
 ```
@@ -1608,6 +1608,15 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
     )
 ```
 
+#### New `get_ac_total_weight`
+
+Clients may cache this sum for each snapshot.
+
+```python
+def get_ac_total_weight(weights: ACWeights) -> Uint64:
+    return Uint64(sum(int(weight) for weight in weights))
+```
+
 #### New `compute_ac_lanes`
 
 For each balance increment the lottery issues `T // W` tickets plus a ticket
@@ -1625,10 +1634,12 @@ def compute_ac_lanes(
     validator_index: ValidatorIndex,
     secret: Bytes32,
 ) -> Sequence[Uint64]:
-    if validator_index >= len(snapshot.weights) or snapshot.total_weight == 0:
+    if validator_index >= len(snapshot.weights):
         return []
     weight = snapshot.weights[validator_index]
-    total = int(snapshot.total_weight)
+    total = int(get_ac_total_weight(snapshot.weights))
+    if total == 0:
+        return []
     base, remainder = divmod(int(HEAD_VOTE_COMMITTEE_SIZE), total)
     seed = sha256(
         DOMAIN_HEAD_VOTE_COMMITTEE
@@ -2784,7 +2795,7 @@ def process_epoch(state: BeaconState) -> None:
     process_proposer_lookahead(state)
     process_ptc_window(state)
     # [New in PQ:EIP8453]
-    seal_ac_snapshot(state)
+    process_ac_snapshot_updates(state)
     # [New in PQ:EIP8205]
     process_preregistration_expiry(state)
 ```
@@ -2831,7 +2842,7 @@ def get_ac_weights(state: BeaconState, epoch: Epoch) -> ACWeights:
     )
 ```
 
-#### New `seal_ac_snapshot`
+#### New `process_ac_snapshot_updates`
 
 Seal at the end of the first full epoch after capture, using that epoch's
 completed RANDAO mix. Slashings can change eligible weights during the capture
@@ -2839,7 +2850,7 @@ epoch. In its last slot, capture runs after the block's RANDAO reveal, so that
 epoch's completed mix may already be known when the weights are fixed.
 
 ```python
-def seal_ac_snapshot(state: BeaconState) -> None:
+def process_ac_snapshot_updates(state: BeaconState) -> None:
     if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 0:
         return
     epoch = get_current_epoch(state)
@@ -3005,7 +3016,7 @@ def process_block(state: BeaconState, block: BeaconBlock) -> None:
         ):
             advance_dynasty(state)
             if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
-                capture_ac_snapshot(state)
+                update_ac_snapshots(state)
 ```
 
 #### Modified `process_randao`
@@ -4038,7 +4049,7 @@ def advance_dynasty(state: BeaconState) -> None:
     state.dynasty_start_slot = state.slot
 ```
 
-##### New `capture_ac_snapshot`
+##### New `update_ac_snapshots`
 
 At rollover, the third ring entry becomes the newest descriptor and the old
 entry is retained for votes from the previous dynasty. The next dynasty frees
@@ -4054,17 +4065,15 @@ chain entering the rollover dynasty must finalize one of those blocks. Registry
 indices are append-only on descendants of the capture block.
 
 ```python
-def capture_ac_snapshot(state: BeaconState) -> None:
+def update_ac_snapshots(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
     batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
     snapshots = state.ac_snapshots
     weights = get_ac_weights(state, epoch)
-    total = Uint64(sum(int(weight) for weight in weights))
-    if total == 0:
-        newest = snapshots[(batch - 1) % len(snapshots)]
-        weights, total = newest.weights, newest.total_weight
+    if get_ac_total_weight(weights) == 0:
+        weights = snapshots[(batch - 1) % len(snapshots)].weights
     snapshots[batch % len(snapshots)] = ACSnapshot(
-        weights=weights, total_weight=total, seed=Bytes32(), capture_epoch=epoch
+        weights=weights, seed=Bytes32(), capture_epoch=epoch
     )
 ```
 

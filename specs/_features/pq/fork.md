@@ -443,7 +443,6 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
     seed_epoch = epoch - 1 if epoch > GENESIS_EPOCH else GENESIS_EPOCH
     snapshot = ACSnapshot(
         weights=weights,
-        total_weight=Uint64(sum(int(weight) for weight in weights)),
         seed=get_randao_mix(post, seed_epoch),
         capture_epoch=epoch,
     )
