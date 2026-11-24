@@ -168,7 +168,7 @@ def test_fork_pending_top_up_deposit_not_registered(spec, phases, state):
         prepare_pending_deposit(spec, 0, spec.EFFECTIVE_BALANCE_INCREMENT, signed=True)
     )
     post_state = yield from run_fork_test(phases[PQ], state)
-    assert post_state.head_vote_lotteries[0].total_weight == 0
+    assert post_state.ac_snapshots[0].total_weight == 0
 
 
 @with_phases(phases=[EIP8483], other_phases=[PQ])
@@ -297,7 +297,7 @@ def test_fork_with_no_active_validators_in_next_epoch(spec, phases, state):
 
     post_spec = phases[PQ]
     post_state = yield from run_fork_test(post_spec, state)
-    lottery = post_state.head_vote_lotteries[0].copy()
+    lottery = post_state.ac_snapshots[0].copy()
     assert (
         lottery.total_weight
         == state.validators[0].effective_balance // spec.EFFECTIVE_BALANCE_INCREMENT
@@ -306,7 +306,7 @@ def test_fork_with_no_active_validators_in_next_epoch(spec, phases, state):
     next_epoch(post_spec, post_state)
     assert post_spec.get_current_epoch(post_state) == epoch + 1
     assert not post_spec.get_active_validator_indices(post_state, epoch + 1)
-    assert post_state.head_vote_lotteries[0] == lottery
+    assert post_state.ac_snapshots[0] == lottery
 
 
 @with_phases(phases=[EIP8483], other_phases=[PQ])

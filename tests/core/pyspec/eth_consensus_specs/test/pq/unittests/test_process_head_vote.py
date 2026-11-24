@@ -72,9 +72,7 @@ def prove_head_votes(spec, state, votes):
 def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(0, slot))
-    state.head_vote_lotteries[0] = spec.HeadVoteLottery(
-        weights=spec.HeadVoteWeights(data=[1]), total_weight=1
-    )
+    state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[1]), total_weight=1)
     index = spec.ValidatorIndex(0)
     assert spec.get_head_vote_weight(state, slot, index, proof) == spec.HEAD_VOTE_COMMITTEE_SIZE
     state.validators[0].slashed = True
@@ -90,14 +88,14 @@ def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), new_validator_proof) == 0
 
 
-def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
+def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
     # Disjoint snapshots make selection from the wrong side of the cursor visible.
-    first = spec.HeadVoteLottery(weights=spec.HeadVoteWeights(data=[1, 0]), total_weight=1)
-    second = spec.HeadVoteLottery(weights=spec.HeadVoteWeights(data=[0, 1]), total_weight=1)
-    state.head_vote_lotteries[0] = first
-    state.head_vote_lotteries[1] = second
-    state.head_vote_lotteries[2] = first
+    first = spec.ACSnapshot(weights=spec.ACWeights(data=[1, 0]), total_weight=1)
+    second = spec.ACSnapshot(weights=spec.ACWeights(data=[0, 1]), total_weight=1)
+    state.ac_snapshots[0] = first
+    state.ac_snapshots[1] = second
+    state.ac_snapshots[2] = first
     size = spec.HEAD_VOTE_COMMITTEE_SIZE
     state.dynasty = spec.Dynasty(size - 2)
     state.dynasty_start_slot = spec.Slot(1)
@@ -105,9 +103,7 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     assert state.dynasty == size - 1
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(1, slot))
-    lanes = spec.compute_head_vote_lanes(
-        second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
-    )
+    lanes = spec.compute_ac_lanes(second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0])
     assert len(lanes) == size
     expected = sum(lane < size - 1 for lane in lanes)
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
@@ -135,7 +131,7 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     new_proof = spec.VRFProof(data=get_vrf_proof(1, state.slot))
     assert spec.get_head_vote_weight(state, state.slot, spec.ValidatorIndex(1), new_proof) == size
     assert (
-        spec.compute_head_vote_lanes(
+        spec.compute_ac_lanes(
             second, spec.Uint64(1), state.slot, spec.ValidatorIndex(1), new_proof[0]
         )
         != lanes
@@ -162,18 +158,20 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     spec.process_block(older_finality, block)
     assert older_finality.target_checkpoint.height == 4
     assert older_finality.dynasty == size
-    assert older_finality.head_vote_lotteries[0] == first
+    assert older_finality.ac_snapshots[0] == first
 
     spec.process_block(state, block)
     assert state.dynasty == size + 1
-    assert len(state.head_vote_lotteries) == 3
-    assert state.head_vote_lotteries[0].total_weight > first.total_weight
-    assert state.head_vote_lotteries[1] == second
-    assert state.head_vote_lotteries[2] == first
+    assert len(state.ac_snapshots) == 3
+    assert state.ac_snapshots[0].total_weight > first.total_weight
+    assert state.ac_snapshots[1] == second
+    assert state.ac_snapshots[2] == first
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == 0
 
     # Its child rejects the same duty although the payment epoch is still open.
     epoch = spec.get_current_epoch(state)
+    assert state.ac_snapshots[0].capture_epoch == epoch
+    assert spec.get_randao_mix(state, epoch) != spec.Bytes32()
     spec.process_slots(state, state.slot + 1)
     child = build_empty_block(spec, state)
     spec.process_block(state.copy(), child)
@@ -183,17 +181,17 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
         spec.process_block(state.copy(), child)
 
     # Capture fixes the weights; only the next full epoch's mix seals them.
-    captured = state.head_vote_lotteries[0].weights.copy()
+    captured = state.ac_snapshots[0].weights.copy()
     state.validators[0].slashed = True
     seed_epoch_start = spec.compute_start_slot_at_epoch(epoch + 1)
     if state.slot < seed_epoch_start:
         spec.process_slots(state, seed_epoch_start)
-    assert state.head_vote_lotteries[0].seed == spec.Bytes32()
+    assert state.ac_snapshots[0].seed == spec.Bytes32()
     mix = spec.Bytes32(b"\x37" * 32)
     state.randao_mixes[(epoch + 1) % spec.EPOCHS_PER_HISTORICAL_VECTOR] = mix
     spec.process_slots(state, spec.compute_start_slot_at_epoch(epoch + 2))
-    assert state.head_vote_lotteries[0].seed == mix
-    assert state.head_vote_lotteries[0].weights == captured
+    assert state.ac_snapshots[0].seed == mix
+    assert state.ac_snapshots[0].weights == captured
 
 
 def test_same_slot_vote_records_participation(spec, state):

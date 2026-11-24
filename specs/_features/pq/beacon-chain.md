@@ -18,8 +18,8 @@
   - [New `AttestationCommittee`](#new-attestationcommittee)
   - [New `AttestationCommitteeBits`](#new-attestationcommitteebits)
   - [New `Dynasty`](#new-dynasty)
-  - [New `HeadVoteWeights`](#new-headvoteweights)
-  - [New `HeadVoteLotteries`](#new-headvotelotteries)
+  - [New `ACWeights`](#new-acweights)
+  - [New `ACSnapshots`](#new-acsnapshots)
   - [New `HeadVoteCredentials`](#new-headvotecredentials)
   - [New `HeadVotePaymentVoters`](#new-headvotepaymentvoters)
   - [New `HeadVoteParticipation`](#new-headvoteparticipation)
@@ -79,7 +79,7 @@
   - [New containers](#new-containers)
     - [`HeightCheckpoint`](#heightcheckpoint)
     - [`PendingFinality`](#pendingfinality)
-    - [`HeadVoteLottery`](#headvotelottery)
+    - [`ACSnapshot`](#acsnapshot)
     - [`HeadVoteCredential`](#headvotecredential)
     - [`HeadVoteData`](#headvotedata)
     - [`HeadVote`](#headvote)
@@ -113,7 +113,7 @@
     - [New `compute_start_slot_at_round`](#new-compute_start_slot_at_round)
     - [New `compute_attestation_committee_slot`](#new-compute_attestation_committee_slot)
     - [Modified `compute_ptc`](#modified-compute_ptc)
-    - [New `compute_head_vote_lanes`](#new-compute_head_vote_lanes)
+    - [New `compute_ac_lanes`](#new-compute_ac_lanes)
   - [Predicates](#predicates)
     - [New `is_active_validator_preregistration`](#new-is_active_validator_preregistration)
     - [New `is_active_builder_preregistration`](#new-is_active_builder_preregistration)
@@ -177,8 +177,8 @@
   - [Epoch processing](#epoch-processing)
     - [Modified `process_epoch`](#modified-process_epoch)
     - [Modified `process_builder_pending_payments`](#modified-process_builder_pending_payments)
-    - [New `get_head_vote_weights`](#new-get_head_vote_weights)
-    - [New `seal_head_vote_lottery`](#new-seal_head_vote_lottery)
+    - [New `get_ac_weights`](#new-get_ac_weights)
+    - [New `seal_ac_snapshot`](#new-seal_ac_snapshot)
     - [New `process_preregistration_expiry`](#new-process_preregistration_expiry)
     - [Modified `apply_pending_deposit`](#modified-apply_pending_deposit)
     - [Modified `process_pending_deposits`](#modified-process_pending_deposits)
@@ -225,7 +225,7 @@
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
       - [New `advance_dynasty`](#new-advance_dynasty)
-      - [New `capture_head_vote_lottery`](#new-capture_head_vote_lottery)
+      - [New `capture_ac_snapshot`](#new-capture_ac_snapshot)
       - [New `advance_height`](#new-advance_height)
 
 <!-- mdformat-toc end -->
@@ -493,20 +493,20 @@ class Dynasty(Uint64):
     """
 ```
 
-### New `HeadVoteWeights`
+### New `ACWeights`
 
 Each entry counts effective-balance increments. The maximum effective balance is
 2048 increments, which fits in `Uint16`.
 
 ```python
-class HeadVoteWeights(List[Uint16]):
+class ACWeights(List[Uint16]):
     LIMIT = VALIDATOR_REGISTRY_LIMIT
 ```
 
-### New `HeadVoteLotteries`
+### New `ACSnapshots`
 
 ```python
-class HeadVoteLotteries(Vector[HeadVoteLottery]):
+class ACSnapshots(Vector[ACSnapshot]):
     LENGTH = 3
 ```
 
@@ -911,7 +911,7 @@ keeps its name but moves to a new position.
 
 ```python
 class BeaconState(ProgressiveContainer):
-    ACTIVE_FIELDS = active_fields(width=67, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
+    ACTIVE_FIELDS = active_fields(width=66, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
 
     genesis_time: Uint64
     genesis_validators_root: Root
@@ -1003,8 +1003,7 @@ class BeaconState(ProgressiveContainer):
     dynasty: Dynasty
     dynasty_start_slot: Slot
     previous_dynasty_start_slot: Slot
-    head_vote_lotteries: HeadVoteLotteries
-    head_vote_capture_epoch: Epoch
+    ac_snapshots: ACSnapshots
 ```
 
 #### `Builder`
@@ -1231,13 +1230,14 @@ class PendingFinality(Container):
     participation: HeightParticipation
 ```
 
-#### `HeadVoteLottery`
+#### `ACSnapshot`
 
 ```python
-class HeadVoteLottery(Container):
-    weights: HeadVoteWeights
+class ACSnapshot(Container):
+    weights: ACWeights
     total_weight: Uint64
     seed: Bytes32
+    capture_epoch: Epoch
 ```
 
 #### `HeadVoteCredential`
@@ -1608,7 +1608,7 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
     )
 ```
 
-#### New `compute_head_vote_lanes`
+#### New `compute_ac_lanes`
 
 For each balance increment the lottery issues `T // W` tickets plus a ticket
 with probability `(T % W) / W`, where `T` is the lane count and `W` is the
@@ -1618,25 +1618,25 @@ each lane. Repeated lane indices count as separate tickets. This is a reference
 sampler; it takes at most one Bernoulli trial per balance increment.
 
 ```python
-def compute_head_vote_lanes(
-    lottery: HeadVoteLottery,
+def compute_ac_lanes(
+    snapshot: ACSnapshot,
     batch: Uint64,
     slot: Slot,
     validator_index: ValidatorIndex,
-    output: Bytes32,
+    secret: Bytes32,
 ) -> Sequence[Uint64]:
-    if validator_index >= len(lottery.weights) or lottery.total_weight == 0:
+    if validator_index >= len(snapshot.weights) or snapshot.total_weight == 0:
         return []
-    weight = lottery.weights[validator_index]
-    total = int(lottery.total_weight)
+    weight = snapshot.weights[validator_index]
+    total = int(snapshot.total_weight)
     base, remainder = divmod(int(HEAD_VOTE_COMMITTEE_SIZE), total)
     seed = sha256(
         DOMAIN_HEAD_VOTE_COMMITTEE
-        + lottery.seed
+        + snapshot.seed
         + uint_to_bytes(batch)
         + uint_to_bytes(slot)
         + uint_to_bytes(validator_index)
-        + output
+        + secret
     )
     # Rejection sampling gives an exact uniform residue modulo the total weight.
     limit = 2**256 - 2**256 % total
@@ -2362,15 +2362,15 @@ def get_head_vote_weight(
         dynasty -= 1
     batch = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
     cursor = dynasty % HEAD_VOTE_COMMITTEE_SIZE
-    lotteries = state.head_vote_lotteries
-    old_lanes = compute_head_vote_lanes(
-        lotteries[batch % len(lotteries)], batch, slot, validator_index, proof[0]
+    snapshots = state.ac_snapshots
+    old_lanes = compute_ac_lanes(
+        snapshots[batch % len(snapshots)], batch, slot, validator_index, proof[0]
     )
     weight = sum(lane >= cursor for lane in old_lanes)
     if cursor > 0:
         batch += 1
-        new_lanes = compute_head_vote_lanes(
-            lotteries[batch % len(lotteries)], batch, slot, validator_index, proof[0]
+        new_lanes = compute_ac_lanes(
+            snapshots[batch % len(snapshots)], batch, slot, validator_index, proof[0]
         )
         weight += sum(lane < cursor for lane in new_lanes)
     return Uint64(weight)
@@ -2784,7 +2784,7 @@ def process_epoch(state: BeaconState) -> None:
     process_proposer_lookahead(state)
     process_ptc_window(state)
     # [New in PQ:EIP8453]
-    seal_head_vote_lottery(state)
+    seal_ac_snapshot(state)
     # [New in PQ:EIP8205]
     process_preregistration_expiry(state)
 ```
@@ -2817,11 +2817,11 @@ def process_builder_pending_payments(state: BeaconState) -> None:
     state.head_vote_participation[SLOTS_PER_EPOCH:] = new_participation
 ```
 
-#### New `get_head_vote_weights`
+#### New `get_ac_weights`
 
 ```python
-def get_head_vote_weights(state: BeaconState, epoch: Epoch) -> HeadVoteWeights:
-    return HeadVoteWeights(
+def get_ac_weights(state: BeaconState, epoch: Epoch) -> ACWeights:
+    return ACWeights(
         data=[
             Uint16(v.effective_balance // EFFECTIVE_BALANCE_INCREMENT)
             if is_active_validator(v, epoch) and not v.slashed
@@ -2831,19 +2831,22 @@ def get_head_vote_weights(state: BeaconState, epoch: Epoch) -> HeadVoteWeights:
     )
 ```
 
-#### New `seal_head_vote_lottery`
+#### New `seal_ac_snapshot`
 
 Seal at the end of the first full epoch after capture, using that epoch's
-completed RANDAO mix. The snapshot is fixed before that epoch begins.
+completed RANDAO mix. Slashings can change eligible weights during the capture
+epoch. In its last slot, capture runs after the block's RANDAO reveal, so that
+epoch's completed mix may already be known when the weights are fixed.
 
 ```python
-def seal_head_vote_lottery(state: BeaconState) -> None:
+def seal_ac_snapshot(state: BeaconState) -> None:
+    if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 0:
+        return
     epoch = get_current_epoch(state)
-    if epoch > GENESIS_EPOCH and epoch - 1 == state.head_vote_capture_epoch:
-        batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
-        state.head_vote_lotteries[batch % len(state.head_vote_lotteries)].seed = get_randao_mix(
-            state, epoch
-        )
+    batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
+    snapshot = state.ac_snapshots[batch % len(state.ac_snapshots)]
+    if epoch > GENESIS_EPOCH and epoch - 1 == snapshot.capture_epoch:
+        snapshot.seed = get_randao_mix(state, epoch)
 ```
 
 #### New `process_preregistration_expiry`
@@ -3002,7 +3005,7 @@ def process_block(state: BeaconState, block: BeaconBlock) -> None:
         ):
             advance_dynasty(state)
             if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
-                capture_head_vote_lottery(state)
+                capture_ac_snapshot(state)
 ```
 
 #### Modified `process_randao`
@@ -4035,7 +4038,7 @@ def advance_dynasty(state: BeaconState) -> None:
     state.dynasty_start_slot = state.slot
 ```
 
-##### New `capture_head_vote_lottery`
+##### New `capture_ac_snapshot`
 
 At rollover, the third ring entry becomes the newest descriptor and the old
 entry is retained for votes from the previous dynasty. The next dynasty frees
@@ -4051,19 +4054,18 @@ chain entering the rollover dynasty must finalize one of those blocks. Registry
 indices are append-only on descendants of the capture block.
 
 ```python
-def capture_head_vote_lottery(state: BeaconState) -> None:
+def capture_ac_snapshot(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
     batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
-    lotteries = state.head_vote_lotteries
-    weights = get_head_vote_weights(state, epoch)
+    snapshots = state.ac_snapshots
+    weights = get_ac_weights(state, epoch)
     total = Uint64(sum(int(weight) for weight in weights))
     if total == 0:
-        newest = lotteries[(batch - 1) % len(lotteries)]
+        newest = snapshots[(batch - 1) % len(snapshots)]
         weights, total = newest.weights, newest.total_weight
-    lotteries[batch % len(lotteries)] = HeadVoteLottery(
-        weights=weights, total_weight=total, seed=Bytes32()
+    snapshots[batch % len(snapshots)] = ACSnapshot(
+        weights=weights, total_weight=total, seed=Bytes32(), capture_epoch=epoch
     )
-    state.head_vote_capture_epoch = epoch
 ```
 
 ##### New `advance_height`

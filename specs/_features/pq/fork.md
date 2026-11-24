@@ -435,20 +435,20 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
         dynasty=Dynasty(0),
         dynasty_start_slot=pre.slot,
         previous_dynasty_start_slot=pre.slot,
-        head_vote_lotteries=HeadVoteLotteries(),
-        head_vote_capture_epoch=FAR_FUTURE_EPOCH,
+        ac_snapshots=ACSnapshots(),
     )
 
     # [New in PQ:EIP8453]
-    weights = get_head_vote_weights(post, epoch)
+    weights = get_ac_weights(post, epoch)
     seed_epoch = epoch - 1 if epoch > GENESIS_EPOCH else GENESIS_EPOCH
-    lottery = HeadVoteLottery(
+    snapshot = ACSnapshot(
         weights=weights,
         total_weight=Uint64(sum(int(weight) for weight in weights)),
         seed=get_randao_mix(post, seed_epoch),
+        capture_epoch=epoch,
     )
-    post.head_vote_lotteries[0] = lottery
-    post.head_vote_lotteries[1] = lottery
+    post.ac_snapshots[0] = snapshot
+    post.ac_snapshots[1] = snapshot
 
     return post
 ```

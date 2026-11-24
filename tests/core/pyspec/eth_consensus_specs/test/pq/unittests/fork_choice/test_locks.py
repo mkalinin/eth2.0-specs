@@ -108,9 +108,7 @@ def vote_half(spec, store, node, slot=10):
 
 def add_elected_validator(spec, state):
     state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(1), vrf_root=get_vrf_root(0)))
-    state.head_vote_lotteries[0] = spec.HeadVoteLottery(
-        weights=spec.HeadVoteWeights(data=[1]), total_weight=1
-    )
+    state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[1]), total_weight=1)
 
 
 def test_fast_expiry_grows_and_is_capped(spec, tree):
@@ -1064,8 +1062,8 @@ def test_cross_branch_head_vote_identity(spec, tree):
         state.validators.append(
             spec.Validator(pubkey=spec.xmss.SkToPk(key), vrf_root=get_vrf_root(key - 1))
         )
-        state.head_vote_lotteries[0] = spec.HeadVoteLottery(
-            weights=spec.HeadVoteWeights(data=[0] * index + [1]), total_weight=1
+        state.ac_snapshots[0] = spec.ACSnapshot(
+            weights=spec.ACWeights(data=[0] * index + [1]), total_weight=1
         )
         store.block_states[node.root] = state
         data = spec.HeadVoteData(

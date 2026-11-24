@@ -265,15 +265,15 @@ def create_genesis_state(spec, validator_balances, activation_threshold, builder
         state.proposer_lookahead = initialize_proposer_lookahead(spec, state)
 
     if is_post_pq(spec):
-        weights = spec.get_head_vote_weights(state, spec.GENESIS_EPOCH)
-        lottery = spec.HeadVoteLottery(
+        weights = spec.get_ac_weights(state, spec.GENESIS_EPOCH)
+        snapshot = spec.ACSnapshot(
             weights=weights,
             total_weight=spec.Uint64(sum(weights)),
             seed=spec.get_randao_mix(state, spec.GENESIS_EPOCH),
+            capture_epoch=spec.GENESIS_EPOCH,
         )
-        state.head_vote_lotteries[0] = lottery
-        state.head_vote_lotteries[1] = lottery
-        state.head_vote_capture_epoch = spec.FAR_FUTURE_EPOCH
+        state.ac_snapshots[0] = snapshot
+        state.ac_snapshots[1] = snapshot
 
     return state
 

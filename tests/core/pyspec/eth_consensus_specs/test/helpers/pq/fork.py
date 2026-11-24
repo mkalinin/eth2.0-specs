@@ -161,8 +161,8 @@ def run_fork_test(post_spec, pre_state):
     assert (
         post_state.dynasty_start_slot == post_state.previous_dynasty_start_slot == post_state.slot
     )
-    assert post_state.head_vote_lotteries[0] == post_state.head_vote_lotteries[1]
-    assert post_state.head_vote_lotteries[2] == post_spec.HeadVoteLottery.empty()
+    assert post_state.ac_snapshots[0] == post_state.ac_snapshots[1]
+    assert post_state.ac_snapshots[2] == post_spec.ACSnapshot.empty()
 
     # Casper FFG and the epoch participation are removed
     for field in ("justification_bits", "previous_epoch_participation"):
