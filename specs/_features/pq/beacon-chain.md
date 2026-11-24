@@ -151,6 +151,7 @@
     - [New `get_attestation_committee`](#new-get_attestation_committee)
     - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
+    - [New `get_ac_seat_indices`](#new-get_ac_seat_indices)
     - [New `get_head_vote_weight`](#new-get_head_vote_weight)
     - [Modified `get_unslashed_participating_indices`](#modified-get_unslashed_participating_indices)
     - [New `get_validator_weight`](#new-get_validator_weight)
@@ -1616,14 +1617,15 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
 
 #### New `compute_ac_seat_indices`
 
-For a validator of weight `w`, the expected number of tickets is `w * T / W`,
+For a validator of weight `w`, the target expected ticket count is `w * T / W`,
 where `T` is the seat count and `W` is the frozen total weight. The validator
-receives the integer part plus one ticket with probability equal to the
-fractional part. Each ticket independently chooses a seat index uniformly, with
-replacement, giving the validator expected weight `w / W` at each seat index.
-Repeated seat indices count as separate tickets. Each snapshot used for
-selection is assumed to have positive eligible weight. Clients may cache the
-total weight for each snapshot.
+receives the integer part plus one ticket with probability rounded up from the
+fractional part to the nearest multiple of `2**-64`. A single comparison with
+128-bit products implements this rounding, with bias less than `2**-64`. Each
+ticket independently chooses a seat index uniformly, with replacement. Repeated
+seat indices count as separate tickets. Each snapshot used for selection is
+assumed to have positive eligible weight. Clients may cache the total weight for
+each snapshot.
 
 ```python
 def compute_ac_seat_indices(
@@ -1646,16 +1648,8 @@ def compute_ac_seat_indices(
         + uint_to_bytes(validator_index)
         + secret
     )
-    if remainder != 0:
-        # Reject the incomplete range so each residue modulo total is equally likely.
-        limit = 2**256 - 2**256 % total
-        attempt = Uint64(0)
-        while True:
-            draw = int.from_bytes(sha256(seed + b"\x00" + uint_to_bytes(attempt)), "little")
-            if draw < limit:
-                count += int(draw % total < remainder)
-                break
-            attempt += 1
+    if int(bytes_to_uint64(seed[:8])) * total < remainder * 2**64:
+        count += 1
     return [
         Uint64(
             bytes_to_uint64(sha256(seed + b"\x01" + uint_to_bytes(Uint64(ticket)))[:8])
@@ -2329,17 +2323,58 @@ def get_aggregate_participants(
     return participants
 ```
 
+#### New `get_ac_seat_indices`
+
+For dynasty `d`, the snapshot boundary index is `d % T`. Seat indices below it
+use the newer snapshot numbered `d // T + 1`; seat indices at or above it use
+the older snapshot numbered `d // T`. The next snapshot has number `d // T + 2`.
+Storage uses the snapshot number modulo three. Draws use the full number, so
+seats staying with a snapshot retain their draws for the same slot across a
+rollover. The returned sequence retains one entry per winning ticket, including
+repeated seat indices.
+
+```python
+def get_ac_seat_indices(
+    state: BeaconState,
+    dynasty: Dynasty,
+    slot: Slot,
+    validator_index: ValidatorIndex,
+    secret: Bytes32,
+) -> Sequence[Uint64]:
+    snapshot_number = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
+    snapshot_boundary_index = dynasty % HEAD_VOTE_COMMITTEE_SIZE
+    snapshots = state.ac_snapshots
+    old_seat_indices = compute_ac_seat_indices(
+        snapshots[snapshot_number % len(snapshots)],
+        snapshot_number,
+        slot,
+        validator_index,
+        secret,
+    )
+    seat_indices = [
+        seat_index for seat_index in old_seat_indices if seat_index >= snapshot_boundary_index
+    ]
+    if snapshot_boundary_index > 0:
+        snapshot_number += 1
+        new_seat_indices = compute_ac_seat_indices(
+            snapshots[snapshot_number % len(snapshots)],
+            snapshot_number,
+            slot,
+            validator_index,
+            secret,
+        )
+        seat_indices.extend(
+            seat_index for seat_index in new_seat_indices if seat_index < snapshot_boundary_index
+        )
+    return seat_indices
+```
+
 #### New `get_head_vote_weight`
 
 Fork choice uses the voting head's post-state and the full duty slot, including
 when the head is older than the duty. Block inclusion uses the including chain's
 dynasty at the end of the duty slot, carried forward over empty slots. A duty
-before the previous dynasty has no weight for inclusion. For dynasty `d`, the
-committee interpolation index is `d % T`. Seat indices below it use snapshot
-number `d // T + 1`; the others use `d // T`. The next snapshot has number
-`d // T + 2`. Storage uses the snapshot number modulo three. Draws use the full
-number, so seats staying with a snapshot retain their draws for the same slot
-across a rollover.
+before the previous dynasty has no weight for inclusion.
 
 The draft uses the registered RANDAO tree. A proposer reveal also reveals the
 proposer's AC opening for that slot, and an AC vote reveals the voter's RANDAO
@@ -2363,28 +2398,7 @@ def get_head_vote_weight(
         if slot < state.previous_dynasty_start_slot:
             return Uint64(0)
         dynasty -= 1
-    snapshot_number = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
-    committee_interpolation_index = dynasty % HEAD_VOTE_COMMITTEE_SIZE
-    snapshots = state.ac_snapshots
-    old_seat_indices = compute_ac_seat_indices(
-        snapshots[snapshot_number % len(snapshots)],
-        snapshot_number,
-        slot,
-        validator_index,
-        proof[0],
-    )
-    weight = sum(seat_index >= committee_interpolation_index for seat_index in old_seat_indices)
-    if committee_interpolation_index > 0:
-        snapshot_number += 1
-        new_seat_indices = compute_ac_seat_indices(
-            snapshots[snapshot_number % len(snapshots)],
-            snapshot_number,
-            slot,
-            validator_index,
-            proof[0],
-        )
-        weight += sum(seat_index < committee_interpolation_index for seat_index in new_seat_indices)
-    return Uint64(weight)
+    return Uint64(len(get_ac_seat_indices(state, dynasty, slot, validator_index, proof[0])))
 ```
 
 #### Modified `get_unslashed_participating_indices`
@@ -3235,8 +3249,10 @@ def process_operations(
 
 ##### New `process_stark`
 
-*Note*: The block's `proof` proves the statements of its attestations, followed
-by those of its head votes.
+*Note*: The block's `proof` proves the XMSS statements of its attestations,
+followed by those of its head votes. Head vote VRF openings are verified in
+`process_head_vote`; aggregating them requires LeanVM support for the Keccak-256
+opening statement.
 
 ```python
 def process_stark(state: BeaconState, body: BeaconBlockBody) -> None:
@@ -3357,7 +3373,8 @@ run before dynasty advancement, so an entry block may include a duty from the
 dynasty it makes ineligible for subsequent blocks. With a dynasty advance every
 two slots, this gives votes three or four slots for inclusion, depending on the
 duty slot. `process_stark` verifies the XMSS signatures; this operation checks
-the Merkle openings.
+the raw VRF Merkle openings. Every eligible voter can count once toward payment
+regardless of which seat indices they hold.
 
 ```python
 def process_head_vote(state: BeaconState, vote: HeadVote) -> None:
@@ -4060,11 +4077,11 @@ that retired entry, which can then capture weights for the next rollover.
 
 The fastest dynasty advance takes two slots: the height opened by the dynasty's
 entry block can be justified only by a later block, and the resulting pending
-justification can only be finalized by another block. As the interpolation index
-goes from 1 at capture to `T - 1`, at least `2 * (T - 2)` slots elapse: 1020 on
-mainnet and 28 on minimal. Sealing takes at most two epochs (64 or 16 slots,
-respectively), so every block of the penultimate dynasty already carries the
-sealed snapshot. A chain entering the rollover dynasty must finalize one of
+justification can only be finalized by another block. As the snapshot boundary
+index goes from 1 at capture to `T - 1`, at least `2 * (T - 2)` slots elapse:
+1020 on mainnet and 28 on minimal. Sealing takes at most two epochs (64 or 16
+slots, respectively), so every block of the penultimate dynasty already carries
+the sealed snapshot. A chain entering the rollover dynasty must finalize one of
 those blocks. Registry indices are append-only on descendants of the capture
 block.
 

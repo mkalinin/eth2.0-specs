@@ -296,9 +296,9 @@ tickets, regardless of the number it wins.
 ### Lookahead
 
 A validator can evaluate its own openings in advance for a given pair of
-snapshots and committee interpolation index. A validator's attestation committee
-index is fixed by its validator index, and the chain state determines whether it
-is active.
+snapshots and snapshot boundary index. A validator's attestation committee index
+is fixed by its validator index, and the chain state determines whether it is
+active.
 
 *TODO*: Specify assignment lookahead and the dependent root in the PQ
 fork-choice and networking specifications.

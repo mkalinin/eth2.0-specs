@@ -106,13 +106,13 @@ def test_snapshot_sampler_rounds_at_fractional_boundary(spec, monkeypatch, extra
     snapshot = spec.ACSnapshot(weights=spec.ACWeights(data=[2, 1]))
     index = spec.ValidatorIndex(0)
     count, remainder = divmod(2 * int(spec.HEAD_VOTE_COMMITTEE_SIZE), 3)
-    accepted_draw = remainder - int(extra_ticket)
+    cutoff = (remainder * 2**64 + 2) // 3
+    draw = cutoff - int(extra_ticket)
     sha256 = spec.sha256
 
     def hash_with_controlled_draw(data):
-        if len(data) == 41 and data[32] == 0:
-            draw = 2**256 - 1 if data[-8:] == bytes(8) else accepted_draw
-            return spec.Bytes32(draw.to_bytes(32, "little"))
+        if len(data) == len(spec.DOMAIN_HEAD_VOTE_COMMITTEE) + 32 + 3 * 8 + 32:
+            return spec.Bytes32(draw.to_bytes(8, "little") + b"\xff" * 24)
         return sha256(data)
 
     monkeypatch.setattr(spec, "sha256", hash_with_controlled_draw)
@@ -125,7 +125,7 @@ def test_snapshot_sampler_rounds_at_fractional_boundary(spec, monkeypatch, extra
 
 def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
-    # Disjoint snapshots make selection on the wrong side of the interpolation index visible.
+    # Disjoint snapshots expose selection on the wrong side of the snapshot boundary.
     first = spec.ACSnapshot(weights=spec.ACWeights(data=[1, 0]))
     second = spec.ACSnapshot(weights=spec.ACWeights(data=[0, 1]))
     state.ac_snapshots[0] = first
@@ -142,13 +142,25 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
         second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
     )
     assert len(seat_indices) == size
-    expected = sum(seat_index < size - 1 for seat_index in seat_indices)
-    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
+    expected = [seat_index for seat_index in seat_indices if seat_index < size - 1]
+    assert spec.get_ac_seat_indices(
+        state, state.dynasty, slot, spec.ValidatorIndex(1), proof[0]
+    ) == (expected)
+    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == len(expected)
+
+    old_index = spec.ValidatorIndex(0)
+    old_secret = spec.VRFProof(data=get_vrf_proof(old_index, slot))[0]
+    old_seat_indices = spec.compute_ac_seat_indices(
+        first, spec.Uint64(0), slot, old_index, old_secret
+    )
+    assert spec.get_ac_seat_indices(state, state.dynasty, slot, old_index, old_secret) == [
+        seat_index for seat_index in old_seat_indices if seat_index == size - 1
+    ]
 
     spec.process_slots(state, slot + 2)
     spec.advance_dynasty(state)
     assert state.dynasty == size
-    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
+    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == len(expected)
 
     # The pre-rollover duty remains eligible immediately after rollover.
     data = spec.HeadVoteData(
@@ -189,7 +201,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     block.body.head_votes.append(aggregate)
     block.body.proof = prove_head_votes(spec, state, block.body.head_votes)
 
-    # A height entry finalizing an older dynasty leaves the interpolation index unchanged.
+    # Finalizing an older dynasty leaves the snapshot boundary unchanged.
     older_finality = state.copy()
     older_finality.pending_finality[0].slot = slot + 1
     spec.process_block(older_finality, block)

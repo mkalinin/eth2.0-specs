@@ -310,11 +310,10 @@ because the state stores only the commitment.
 FFG checkpoint, and the target of height 1 is the latest block before the
 upgrade. Participation in the last epoch before the upgrade is not rewarded.
 
-AC starts at dynasty zero with committee interpolation index zero. Snapshots
-zero and one use the eligible weights at the fork and the completed pre-fork
-RANDAO mix (the genesis mix at a genesis fork). Their snapshot numbers
-distinguish their draws. The third entry captures its first snapshot when
-dynasty one begins.
+AC starts at dynasty zero with snapshot boundary index zero. Snapshots zero and
+one use the eligible weights at the fork and the completed pre-fork RANDAO mix
+(the genesis mix at a genesis fork). Their snapshot numbers distinguish their
+draws. The third entry captures its first snapshot when dynasty one begins.
 
 The AC bootstrap assumes positive eligible weight from registered validators at
 the fork. It does not sample future epochs. Proposer and payload timeliness
