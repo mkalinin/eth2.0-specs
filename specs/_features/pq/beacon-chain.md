@@ -514,7 +514,7 @@ class ACSnapshots(Vector[ACSnapshot]):
 
 ```python
 class HeadVoteCredentials(List[HeadVoteCredential]):
-    LIMIT = 2 * HEAD_VOTE_PAYMENT_TARGET
+    LIMIT = 2 * HEAD_VOTE_COMMITTEE_SIZE
 ```
 
 ### New `HeadVotePaymentVoters`
@@ -740,6 +740,11 @@ distinct voters, regardless of their ticket counts. Both thresholds are draft
 parameters: the denominator is not a bound on the number of tickets on one head
 or across competing heads. In particular, the thresholds do not imply
 deterministic quorum intersection.
+
+The block credential limit is twice the expected committee size to leave room
+for a slot's full set of votes for rewards, with slack for variation in the
+number of distinct voters. The builder payment target only limits payment
+accounting.
 
 Presets must set `HEAD_VOTE_COMMITTEE_SIZE` to a power of two so seat assignment
 by reduction modulo the committee size is uniform. It must also be at least
@@ -3208,7 +3213,7 @@ def process_operations(
     # Removed the payload attestation limit
     # [New in PQ:EIP8453]
     assert len(body.head_votes) <= MAX_HEAD_VOTES
-    assert sum(len(vote.credentials) for vote in body.head_votes) <= 2 * HEAD_VOTE_PAYMENT_TARGET
+    assert sum(len(vote.credentials) for vote in body.head_votes) <= 2 * HEAD_VOTE_COMMITTEE_SIZE
     # [New in PQ:EIP8453]
     assert is_valid_head_vote_declarations(body, state.slot)
 

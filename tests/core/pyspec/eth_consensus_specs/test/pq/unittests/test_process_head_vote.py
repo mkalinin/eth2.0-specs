@@ -444,18 +444,20 @@ def test_declaration_slot_and_full_pool_bound(spec, state, monkeypatch):
         spec.process_operations(state, body)
 
 
-def test_block_credential_limit_counts_across_aggregates(spec, state):
-    vote = signed_vote(spec, state, 1, count=spec.HEAD_VOTE_PAYMENT_TARGET)
-    assert len(vote.credentials) == spec.HEAD_VOTE_PAYMENT_TARGET
+def test_block_credential_limit_counts_across_aggregates(spec, state, monkeypatch):
+    # The fixture prover serializes raw signatures and exceeds the proof size bound.
+    monkeypatch.setattr(spec.stark, "VerifyAggregates", lambda statements, proof: True)
+    count = spec.HEAD_VOTE_COMMITTEE_SIZE // 2
+    state.ac_snapshots[0].weights = spec.ACWeights(data=[1] * count)
+    vote = signed_vote(spec, state, 1, count=count)
+    assert len(vote.credentials) == count
     body = spec.BeaconBlockBody()
-    body.head_votes.append(vote)
-    body.head_votes.append(vote)
-    body.proof = prove_head_votes(spec, state, body.head_votes)
+    for _ in range(4):
+        body.head_votes.append(vote)
     spec.verify_block_body_operation_limits(body)
     spec.process_operations(state.copy(), body)
 
     body.head_votes.append(signed_vote(spec, state, 1, count=1))
-    body.proof = prove_head_votes(spec, state, body.head_votes)
     with pytest.raises(spec.GossipReject, match="too many head vote credentials"):
         spec.verify_block_body_operation_limits(body)
     with pytest.raises(AssertionError):
