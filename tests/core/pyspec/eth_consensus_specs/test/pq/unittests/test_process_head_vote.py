@@ -88,6 +88,18 @@ def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), new_validator_proof) == 0
 
 
+def test_snapshot_total_can_exceed_uint16(spec, state):
+    slot = state.slot
+    proof = spec.VRFProof(data=get_vrf_proof(0, slot))
+    index = spec.ValidatorIndex(0)
+    weight = int(spec.MAX_EFFECTIVE_BALANCE_ELECTRA // spec.EFFECTIVE_BALANCE_INCREMENT)
+    assert spec.is_valid_vrf_proof(state, index, slot, proof)
+    state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[0] * 32))
+    assert spec.get_head_vote_weight(state, slot, index, proof) == 0
+    state.ac_snapshots[0].weights = spec.ACWeights(data=[weight] * 32)
+    assert spec.get_head_vote_weight(state, slot, index, proof) <= weight
+
+
 def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
     # Disjoint snapshots make selection from the wrong side of the cursor visible.
@@ -163,7 +175,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     spec.process_block(state, block)
     assert state.dynasty == size + 1
     assert len(state.ac_snapshots) == 3
-    assert sum(state.ac_snapshots[0].weights) > 1
+    assert sum(int(weight) for weight in state.ac_snapshots[0].weights) > 1
     assert state.ac_snapshots[1] == second
     assert state.ac_snapshots[2] == first
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == 0

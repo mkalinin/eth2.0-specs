@@ -113,7 +113,6 @@
     - [New `compute_start_slot_at_round`](#new-compute_start_slot_at_round)
     - [New `compute_attestation_committee_slot`](#new-compute_attestation_committee_slot)
     - [Modified `compute_ptc`](#modified-compute_ptc)
-    - [New `get_ac_total_weight`](#new-get_ac_total_weight)
     - [New `compute_ac_lanes`](#new-compute_ac_lanes)
   - [Predicates](#predicates)
     - [New `is_active_validator_preregistration`](#new-is_active_validator_preregistration)
@@ -742,8 +741,10 @@ parameters: the denominator is not a bound on the number of tickets on one head
 or across competing heads. In particular, the thresholds do not imply
 deterministic quorum intersection.
 
-Presets must set `HEAD_VOTE_COMMITTEE_SIZE >= SLOTS_PER_EPOCH + 2` so the third
-descriptor can seal before the penultimate dynasty of each cycle.
+Presets must set `HEAD_VOTE_COMMITTEE_SIZE` to a power of two so lane assignment
+by reduction modulo the committee size is uniform. It must also be at least
+`SLOTS_PER_EPOCH + 2` so the third descriptor can seal before the penultimate
+dynasty of each cycle.
 
 The active descriptors retain the stake in their snapshots until the dynasty
 cursor replaces them. Through a finality stall, the ticket draws remain fresh
@@ -1608,15 +1609,6 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
     )
 ```
 
-#### New `get_ac_total_weight`
-
-Clients may cache this sum for each snapshot.
-
-```python
-def get_ac_total_weight(weights: ACWeights) -> Uint64:
-    return Uint64(sum(int(weight) for weight in weights))
-```
-
 #### New `compute_ac_lanes`
 
 For each balance increment the lottery issues `T // W` tickets plus a ticket
@@ -1624,7 +1616,8 @@ with probability `(T % W) / W`, where `T` is the lane count and `W` is the
 frozen total weight. Each ticket independently chooses a lane uniformly, with
 replacement. A validator of weight `w` therefore has expected weight `w / W` in
 each lane. Repeated lane indices count as separate tickets. This is a reference
-sampler; it takes at most one Bernoulli trial per balance increment.
+sampler; it takes at most one Bernoulli trial per balance increment. Clients may
+cache the total weight for each snapshot.
 
 ```python
 def compute_ac_lanes(
@@ -1637,9 +1630,9 @@ def compute_ac_lanes(
     if validator_index >= len(snapshot.weights):
         return []
     weight = snapshot.weights[validator_index]
-    total = int(get_ac_total_weight(snapshot.weights))
-    if total == 0:
+    if weight == 0:
         return []
+    total = sum(int(weight) for weight in snapshot.weights)
     base, remainder = divmod(int(HEAD_VOTE_COMMITTEE_SIZE), total)
     seed = sha256(
         DOMAIN_HEAD_VOTE_COMMITTEE
@@ -4069,11 +4062,8 @@ def update_ac_snapshots(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
     batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
     snapshots = state.ac_snapshots
-    weights = get_ac_weights(state, epoch)
-    if get_ac_total_weight(weights) == 0:
-        weights = snapshots[(batch - 1) % len(snapshots)].weights
     snapshots[batch % len(snapshots)] = ACSnapshot(
-        weights=weights, seed=Bytes32(), capture_epoch=epoch
+        weights=get_ac_weights(state, epoch), seed=Bytes32(), capture_epoch=epoch
     )
 ```
 
