@@ -491,7 +491,7 @@ def validate_beacon_block_gossip(
     signing_root = compute_signing_root(block, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_leaf_index(block.slot, LEAF_OFFSET_BEACON_PROPOSER)
-    if not xmss.Verify(proposer.pubkey, leaf_index, signing_root, signed_beacon_block.signature):
+    if not xmss_verify(proposer.pubkey, leaf_index, signing_root, signed_beacon_block.signature):
         raise GossipReject("invalid proposer signature")
 
     # [IGNORE] If the parent block is full, the parent payload is valid
@@ -634,7 +634,7 @@ def validate_head_vote_gossip(
     domain = get_domain(state, DOMAIN_HEAD_VOTE, compute_epoch_at_slot(data.slot))
     signing_root = compute_signing_root(data, domain)
     leaf_index = compute_xmss_leaf_index(data.slot, LEAF_OFFSET_HEAD_VOTE)
-    if not xmss.Verify(validator.pubkey, leaf_index, signing_root, head_vote_message.signature):
+    if not xmss_verify(validator.pubkey, leaf_index, signing_root, head_vote_message.signature):
         raise GossipReject("invalid head vote signature")
 
     # Mark this head vote as seen
@@ -720,7 +720,7 @@ def validate_proposer_slashing_gossip(
         leaf_index = compute_xmss_leaf_index(
             signed_header.message.slot, LEAF_OFFSET_BEACON_PROPOSER
         )
-        if not xmss.Verify(proposer.pubkey, leaf_index, signing_root, signed_header.signature):
+        if not xmss_verify(proposer.pubkey, leaf_index, signing_root, signed_header.signature):
             raise GossipReject("invalid proposer slashing signature")
 
     # Mark this proposer slashing as seen
@@ -790,7 +790,7 @@ def validate_payload_attestation_message_gossip(
     signing_root = compute_signing_root(data, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_leaf_index(data.slot, LEAF_OFFSET_PTC_ATTESTER)
-    if not xmss.Verify(
+    if not xmss_verify(
         validator.pubkey, leaf_index, signing_root, payload_attestation_message.signature
     ):
         raise GossipReject("invalid payload attestation signature")
@@ -1013,7 +1013,7 @@ def validate_proposer_preferences_gossip(
     leaf_index = compute_xmss_leaf_index(
         preferences.proposal_slot, LEAF_OFFSET_PROPOSER_PREFERENCES
     )
-    if not xmss.Verify(
+    if not xmss_verify(
         validator.pubkey, leaf_index, signing_root, signed_proposer_preferences.signature
     ):
         raise GossipReject("invalid proposer preferences signature")
@@ -1149,7 +1149,7 @@ def validate_attestation_gossip(
     domain = get_domain(state, DOMAIN_FINALITY_ATTESTER, epoch)
     signing_root = compute_signing_root(data, domain)
     leaf_index = compute_xmss_attestation_leaf_index(attestation.round)
-    if not xmss.Verify(attester.pubkey, leaf_index, signing_root, attestation.signature):
+    if not xmss_verify(attester.pubkey, leaf_index, signing_root, attestation.signature):
         raise GossipReject("invalid attestation signature")
 
     # Mark this attestation as seen

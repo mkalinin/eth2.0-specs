@@ -91,12 +91,18 @@
     - [`XMSSAggregateStatement`](#xmssaggregatestatement)
 - [Helpers](#helpers)
   - [Crypto](#crypto)
-    - [XMSS signatures](#xmss-signatures)
-    - [STARK proofs](#stark-proofs)
+    - [New `keccak256`](#new-keccak256)
+    - [New `xmss_sign`](#new-xmss_sign)
+    - [New `xmss_verify`](#new-xmss_verify)
+    - [New `xmss_get_leaf_index`](#new-xmss_get_leaf_index)
+    - [New `stark_prove_aggregates`](#new-stark_prove_aggregates)
+    - [New `stark_merge_proofs`](#new-stark_merge_proofs)
+    - [New `stark_verify_aggregates`](#new-stark_verify_aggregates)
   - [Misc](#misc-1)
     - [New `compute_legacy_xmss_pubkey`](#new-compute_legacy_xmss_pubkey)
     - [New `compute_legacy_vrf_root`](#new-compute_legacy_vrf_root)
     - [New `compute_deposit_pubkey`](#new-compute_deposit_pubkey)
+    - [New `compute_vrf_leaf`](#new-compute_vrf_leaf)
     - [New `compute_deposit_vrf_root`](#new-compute_deposit_vrf_root)
     - [New `compute_xmss_attestation_leaf_index`](#new-compute_xmss_attestation_leaf_index)
     - [New `compute_xmss_leaf_index`](#new-compute_xmss_leaf_index)
@@ -293,10 +299,11 @@ XMSS has no native aggregation. A STARK instead proves many XMSS signatures at
 once, such as those of attestations and head votes in an `AttestationProof`.
 
 XMSS signatures are not unique, so a proposer could grind a signature-based
-RANDAO reveal. Each validator instead registers the root of a Merkle tree of
-secret random values, one for each slot, as its VRF root. Its RANDAO reveal is
-the leaf for the slot with the leaf's Merkle branch, a `VRFProof`, which the
-proposer committed to before the fork.
+RANDAO reveal. Each validator instead has a secret random value for each slot,
+and registers as its VRF root the root of a Merkle tree whose leaf for a slot
+commits to the slot's secret. Its RANDAO reveal is the secret for the slot with
+the leaf's Merkle branch, a `VRFProof`, which the proposer committed to before
+the fork. The branch holds only commitments, so it reveals no other secret.
 
 A validator's record carries the XMSS public key and VRF root it registered with
 EIP-8483 before the fork in place of its BLS public key, and a builder's record
@@ -364,8 +371,8 @@ which is built upon [Gloas](../../gloas/beacon-chain.md).
 ```python
 class VRFProof(Vector[Bytes32]):
     """
-    A leaf of the tree under a validator's VRF root, followed by the leaf's
-    Merkle branch.
+    A secret committed to by a leaf of the tree under a validator's VRF root,
+    followed by the leaf's Merkle branch.
     """
 
     LENGTH = VRF_TREE_DEPTH + 1
@@ -658,9 +665,10 @@ the weights still equals `WEIGHT_DENOMINATOR`.
 
 ### VRF
 
-| Name             | Value        |
-| ---------------- | ------------ |
-| `VRF_TREE_DEPTH` | `Uint64(31)` |
+| Name              | Value         |
+| ----------------- | ------------- |
+| `VRF_TREE_DEPTH`  | `Uint64(31)`  |
+| `VRF_LEAF_DOMAIN` | `b"VRF_LEAF"` |
 
 ### XMSS leaf offsets
 
@@ -1302,45 +1310,92 @@ class XMSSAggregateStatement:
 
 ### Crypto
 
-#### XMSS signatures
+#### New `keccak256`
 
-[leanXMSS](https://github.com/ethereum/ethlib/tree/main/EthLib/Cryptography/Xmss)
-defines the following functions:
+```python
+def keccak256(data: bytes) -> Bytes32:
+    """
+    Return the Keccak-256 hash of ``data``.
+    """
+    return Bytes32(keccak256_hash(data))
+```
 
-- `def Sign(privkey: Bytes32, leaf_index: Uint64, message: Bytes32) -> XMSSSignature`
-- `def Verify(pubkey: XMSSPubkey, leaf_index: Uint64, message: Bytes32, signature: XMSSSignature) -> bool`
-- `def GetLeafIndex(signature: XMSSSignature) -> Uint64`
+#### New `xmss_sign`
 
-Where:
+```python
+def xmss_sign(privkey: Bytes32, leaf_index: Uint64, message: Bytes32) -> XMSSSignature:
+    """
+    Return the signature of ``message`` at ``leaf_index``.
+    """
+    return XMSSSignature(xmss.Sign(privkey, leaf_index, message))
+```
 
-- `Sign` returns the signature of `message` at `leaf_index`.
-- `Verify` returns `True` only if `signature` was produced at `leaf_index`.
-- `GetLeafIndex` returns the leaf index that `signature` carries.
+#### New `xmss_verify`
 
-The above functions are accessed through the `xmss` module, e.g. `xmss.Verify`.
+```python
+def xmss_verify(
+    pubkey: XMSSPubkey,
+    leaf_index: Uint64,
+    message: Bytes32,
+    signature: XMSSSignature,
+) -> bool:
+    """
+    Return ``True`` only if ``signature`` was produced at ``leaf_index``.
+    """
+    return xmss.Verify(pubkey, leaf_index, message, signature)
+```
 
-#### STARK proofs
+#### New `xmss_get_leaf_index`
 
-This upgrade adds the following functions to prove many XMSS signatures at once:
+```python
+def xmss_get_leaf_index(signature: XMSSSignature) -> Uint64:
+    """
+    Return the leaf index that ``signature`` carries.
+    """
+    return Uint64(xmss.GetLeafIndex(signature))
+```
 
-- `def ProveAggregates(statements: Sequence[XMSSAggregateStatement], signatures: Sequence[Sequence[XMSSSignature]]) -> AttestationProof`
-- `def MergeProofs(proofs: Sequence[AttestationProof]) -> AttestationProof`
-- `def VerifyAggregates(statements: Sequence[XMSSAggregateStatement], proof: AttestationProof) -> bool`
+#### New `stark_prove_aggregates`
 
-`VerifyAggregates` returns `True` only if `proof` proves, for each statement and
-each of its public keys, a signature that
-`xmss.Verify(pubkey, statement.leaf_index, statement.message, signature)`
-accepts. `ProveAggregates` takes those signatures for each statement in order,
-and within a statement in the order of its public keys. `MergeProofs` turns
-proofs of lists of statements into one proof of their concatenation, in order.
+```python
+def stark_prove_aggregates(
+    statements: Sequence[XMSSAggregateStatement],
+    signatures: Sequence[Sequence[XMSSSignature]],
+) -> AttestationProof:
+    """
+    Return a proof of ``signatures``, which holds the signatures for each of
+    ``statements`` in order, and within a statement in the order of its public
+    keys.
+    """
+    return AttestationProof(data=stark.ProveAggregates(statements, signatures))
+```
 
-The above functions are accessed through the `stark` module, e.g.
-`stark.VerifyAggregates`.
+#### New `stark_merge_proofs`
 
-*Note*: The reference implementations of `ProveAggregates` and `MergeProofs`
-concatenate their inputs, and `VerifyAggregates` checks each signature in turn.
-They stand in for a recursive STARK, which would change the encoding of
-`AttestationProof` but not how these functions are used.
+```python
+def stark_merge_proofs(proofs: Sequence[AttestationProof]) -> AttestationProof:
+    """
+    Return one proof of the concatenation, in order, of the lists of statements
+    that ``proofs`` prove.
+    """
+    return AttestationProof(data=stark.MergeProofs(proofs))
+```
+
+#### New `stark_verify_aggregates`
+
+```python
+def stark_verify_aggregates(
+    statements: Sequence[XMSSAggregateStatement],
+    proof: AttestationProof,
+) -> bool:
+    """
+    Return ``True`` only if ``proof`` proves, for each of ``statements`` and
+    each of its public keys, a signature that
+    ``xmss_verify(pubkey, statement.leaf_index, statement.message, signature)``
+    accepts.
+    """
+    return stark.VerifyAggregates(statements, proof)
+```
 
 ### Misc
 
@@ -1351,7 +1406,7 @@ def compute_legacy_xmss_pubkey(pubkey: Bytes48) -> XMSSPubkey:
     """
     Return the XMSS public key derived from the BLS public key ``pubkey``.
     """
-    return XMSSPubkey(sha256(pubkey + LEGACY_XMSS_PUBKEY_DOMAIN))
+    return XMSSPubkey(keccak256(pubkey + LEGACY_XMSS_PUBKEY_DOMAIN))
 ```
 
 #### New `compute_legacy_vrf_root`
@@ -1361,7 +1416,7 @@ def compute_legacy_vrf_root(pubkey: Bytes48) -> Root:
     """
     Return the VRF root derived from the BLS public key ``pubkey``.
     """
-    return Root(sha256(pubkey + LEGACY_VRF_ROOT_DOMAIN))
+    return Root(keccak256(pubkey + LEGACY_VRF_ROOT_DOMAIN))
 ```
 
 #### New `compute_deposit_pubkey`
@@ -1374,6 +1429,20 @@ def compute_deposit_pubkey(pubkey: Bytes48) -> XMSSPubkey:
     if is_legacy_pubkey(pubkey):
         return compute_legacy_xmss_pubkey(pubkey)
     return XMSSPubkey(pubkey[16:])
+```
+
+#### New `compute_vrf_leaf`
+
+*Note*: A leaf commits to its index as well as its secret, so no two leaves of a
+tree are the same, even if its secrets repeat. A validator cannot save work by
+repeating a small subtree in place of computing the whole tree.
+
+```python
+def compute_vrf_leaf(secret: Bytes32, index: Uint64) -> Bytes32:
+    """
+    Return the leaf at ``index`` of a VRF tree, which commits to ``secret``.
+    """
+    return keccak256(VRF_LEAF_DOMAIN + secret + uint_to_bytes(index))
 ```
 
 #### New `compute_deposit_vrf_root`
@@ -1523,7 +1592,8 @@ processing.
 
 ```python
 def is_active_validator_preregistration(
-    state: BeaconState, preregistration: ValidatorPreregistration
+    state: BeaconState,
+    preregistration: ValidatorPreregistration,
 ) -> bool:
     """
     Check if ``preregistration`` has not expired.
@@ -1536,7 +1606,8 @@ def is_active_validator_preregistration(
 
 ```python
 def is_active_builder_preregistration(
-    state: BeaconState, preregistration: BuilderPreregistration
+    state: BeaconState,
+    preregistration: BuilderPreregistration,
 ) -> bool:
     """
     Check if ``preregistration`` has not expired.
@@ -1574,19 +1645,23 @@ def is_legacy_pubkey(pubkey: Bytes48) -> bool:
 
 ```python
 def is_valid_vrf_proof(
-    state: BeaconState, validator_index: ValidatorIndex, slot: Slot, proof: VRFProof
+    state: BeaconState,
+    validator_index: ValidatorIndex,
+    slot: Slot,
+    proof: VRFProof,
 ) -> bool:
     """
-    Check that ``proof`` opens the leaf at index ``slot`` of the tree under
-    the VRF root of the validator at ``validator_index``.
+    Check that ``proof`` reveals the secret that the leaf at index ``slot`` of
+    the tree under the VRF root of the validator at ``validator_index`` commits
+    to.
     """
-    return is_valid_merkle_branch(
-        leaf=proof[0],
-        branch=proof[1:],
-        depth=VRF_TREE_DEPTH,
-        index=slot,
-        root=state.validators[validator_index].vrf_root,
-    )
+    value = compute_vrf_leaf(proof[0], Uint64(slot))
+    for height in range(VRF_TREE_DEPTH):
+        if slot // (2**height) % 2:
+            value = keccak256(proof[height + 1] + value)
+        else:
+            value = keccak256(value + proof[height + 1])
+    return value == state.validators[validator_index].vrf_root
 ```
 
 #### Modified `is_pending_validator`
@@ -1616,7 +1691,8 @@ public keys of its attesting indices in order.
 
 ```python
 def is_valid_indexed_attestation(
-    state: BeaconState, indexed_attestation: IndexedAttestation
+    state: BeaconState,
+    indexed_attestation: IndexedAttestation,
 ) -> bool:
     """
     Check if ``indexed_attestation`` is not empty, has sorted and unique
@@ -1639,7 +1715,7 @@ def is_valid_indexed_attestation(
     signing_root = compute_signing_root(indexed_attestation.data, domain)
     leaf_index = compute_xmss_attestation_leaf_index(indexed_attestation.round)
     statement = XMSSAggregateStatement(pubkeys=pubkeys, leaf_index=leaf_index, message=signing_root)
-    return stark.VerifyAggregates([statement], indexed_attestation.proof)
+    return stark_verify_aggregates([statement], indexed_attestation.proof)
 ```
 
 #### New `is_well_formed_attestation_data`
@@ -1958,7 +2034,8 @@ multiple slots is specified.
 
 ```python
 def get_attestation_statements(
-    state: BeaconState, attestation: Attestation
+    state: BeaconState,
+    attestation: Attestation,
 ) -> Sequence[XMSSAggregateStatement]:
     """
     Return, for each committee of ``attestation`` in order, the statement that the
@@ -2019,7 +2096,8 @@ def get_validator_preregistration_index(state: BeaconState, pubkey: XMSSPubkey) 
 
 ```python
 def get_active_validator_preregistration(
-    state: BeaconState, pubkey: XMSSPubkey
+    state: BeaconState,
+    pubkey: XMSSPubkey,
 ) -> ValidatorPreregistration | None:
     """
     Return the active validator preregistration of ``pubkey``, if any.
@@ -2050,7 +2128,8 @@ def get_builder_preregistration_index(state: BeaconState, pubkey: XMSSPubkey) ->
 
 ```python
 def get_active_builder_preregistration(
-    state: BeaconState, pubkey: XMSSPubkey
+    state: BeaconState,
+    pubkey: XMSSPubkey,
 ) -> BuilderPreregistration | None:
     """
     Return the active builder preregistration of ``pubkey``, if any.
@@ -2421,7 +2500,7 @@ def verify_block_signature(state: BeaconState, signed_block: SignedBeaconBlock) 
     )
     # [Modified in PQ]
     leaf_index = compute_xmss_leaf_index(signed_block.message.slot, LEAF_OFFSET_BEACON_PROPOSER)
-    return xmss.Verify(proposer.pubkey, leaf_index, signing_root, signed_block.signature)
+    return xmss_verify(proposer.pubkey, leaf_index, signing_root, signed_block.signature)
 ```
 
 ### Modified `process_slots`
@@ -2792,9 +2871,10 @@ def process_block(state: BeaconState, block: BeaconBlock) -> None:
 
 #### Modified `process_randao`
 
-*Note*: The reveal is the proposer's VRF proof for the slot. The proposer
-committed to its leaves when it registered its VRF root, so it cannot grind the
-reveal and can only withhold its block, as with BLS.
+*Note*: The reveal is the proposer's VRF proof for the slot, and the secret it
+reveals is mixed in. The proposer committed to its secrets when it registered
+its VRF root, so it cannot grind the reveal and can only withhold its block, as
+with BLS.
 
 ```python
 def process_randao(state: BeaconState, body: BeaconBlockBody) -> None:
@@ -2852,7 +2932,8 @@ def get_execution_requests_list(execution_requests: ExecutionRequests) -> Sequen
 
 ```python
 def verify_execution_payload_envelope_signature(
-    state: BeaconState, signed_envelope: SignedExecutionPayloadEnvelope
+    state: BeaconState,
+    signed_envelope: SignedExecutionPayloadEnvelope,
 ) -> bool:
     builder_index = signed_envelope.message.builder_index
     if builder_index == BUILDER_INDEX_SELF_BUILD:
@@ -2868,7 +2949,7 @@ def verify_execution_payload_envelope_signature(
     leaf_index = compute_xmss_leaf_index(
         state.latest_block_header.slot, LEAF_OFFSET_EXECUTION_PAYLOAD_ENVELOPE
     )
-    return xmss.Verify(pubkey, leaf_index, signing_root, signed_envelope.signature)
+    return xmss_verify(pubkey, leaf_index, signing_root, signed_envelope.signature)
 ```
 
 #### Execution payload bid
@@ -2877,24 +2958,26 @@ def verify_execution_payload_envelope_signature(
 
 ```python
 def verify_execution_payload_bid_signature(
-    state: BeaconState, signed_bid: SignedExecutionPayloadBid
+    state: BeaconState,
+    signed_bid: SignedExecutionPayloadBid,
 ) -> bool:
     builder = state.builders[signed_bid.message.builder_index]
     signing_root = compute_signing_root(
         signed_bid.message, get_domain(state, DOMAIN_BEACON_BUILDER)
     )
     # [Modified in PQ]
-    leaf_index = xmss.GetLeafIndex(signed_bid.signature)
+    leaf_index = xmss_get_leaf_index(signed_bid.signature)
     if not is_builder_bid_leaf_index(leaf_index):
         return False
-    return xmss.Verify(builder.pubkey, leaf_index, signing_root, signed_bid.signature)
+    return xmss_verify(builder.pubkey, leaf_index, signing_root, signed_bid.signature)
 ```
 
 ##### Modified `process_execution_payload_bid`
 
 ```python
 def process_execution_payload_bid(
-    state: BeaconState, signed_bid: SignedExecutionPayloadBid
+    state: BeaconState,
+    signed_bid: SignedExecutionPayloadBid,
 ) -> None:
     bid = signed_bid.message
     builder_index = bid.builder_index
@@ -3010,7 +3093,7 @@ def process_stark(state: BeaconState, body: BeaconBlockBody) -> None:
         statements.extend(get_attestation_statements(state, attestation))
     for vote in body.head_votes:
         statements.append(get_head_vote_statement(state, vote))
-    assert stark.VerifyAggregates(statements, body.proof)
+    assert stark_verify_aggregates(statements, body.proof)
 ```
 
 ##### Modified `process_proposer_slashing`
@@ -3042,7 +3125,7 @@ def process_proposer_slashing(state: BeaconState, proposer_slashing: ProposerSla
         leaf_index = compute_xmss_leaf_index(
             signed_header.message.slot, LEAF_OFFSET_BEACON_PROPOSER
         )
-        assert xmss.Verify(proposer.pubkey, leaf_index, signing_root, signed_header.signature)
+        assert xmss_verify(proposer.pubkey, leaf_index, signing_root, signed_header.signature)
 
     slash_validator(state, header_1.proposer_index)
 ```
@@ -3420,7 +3503,8 @@ def process_withdrawal_request(state: BeaconState, withdrawal_request: Withdrawa
 
 ```python
 def is_valid_switch_to_compounding_request(
-    state: BeaconState, consolidation_request: ConsolidationRequest
+    state: BeaconState,
+    consolidation_request: ConsolidationRequest,
 ) -> bool:
     # Switch to compounding requires source and target be equal
     if consolidation_request.source_pubkey != consolidation_request.target_pubkey:
@@ -3459,7 +3543,8 @@ def is_valid_switch_to_compounding_request(
 
 ```python
 def process_consolidation_request(
-    state: BeaconState, consolidation_request: ConsolidationRequest
+    state: BeaconState,
+    consolidation_request: ConsolidationRequest,
 ) -> None:
     # [New in PQ]
     # Ignore requests that name a BLS public key
@@ -3548,7 +3633,8 @@ def process_consolidation_request(
 
 ```python
 def process_validator_preregistration_request(
-    state: BeaconState, request: ValidatorPreregistrationRequest
+    state: BeaconState,
+    request: ValidatorPreregistrationRequest,
 ) -> None:
     pubkey = request.pubkey
 
@@ -3594,7 +3680,8 @@ def process_validator_preregistration_request(
 
 ```python
 def process_builder_preregistration_request(
-    state: BeaconState, request: BuilderPreregistrationRequest
+    state: BeaconState,
+    request: BuilderPreregistrationRequest,
 ) -> None:
     pubkey = request.pubkey
 

@@ -5,12 +5,18 @@
 <!-- mdformat-toc start --slug=github --no-anchors --maxlevel=6 --minlevel=2 -->
 
 - [Introduction](#introduction)
+- [Constants](#constants)
+  - [Misc](#misc)
 - [Containers](#containers)
 - [Helpers](#helpers)
   - [New `FinalitySigningRecord`](#new-finalitysigningrecord)
 - [Becoming a validator](#becoming-a-validator)
   - [Initialization](#initialization)
     - [VRF tree](#vrf-tree)
+      - [New `compute_vrf_secret`](#new-compute_vrf_secret)
+      - [New `compute_vrf_node`](#new-compute_vrf_node)
+      - [New `compute_vrf_root`](#new-compute_vrf_root)
+      - [New `compute_vrf_proof`](#new-compute_vrf_proof)
     - [XMSS public key](#xmss-public-key)
   - [Preregister](#preregister)
   - [Submit deposit](#submit-deposit)
@@ -74,13 +80,17 @@ leaf that `compute_xmss_leaf_index` assigns to its slot and type, except an
 attestation, which is signed at the leaf that
 `compute_xmss_attestation_leaf_index` assigns to its round, and a message
 without a leaf of its own, such as a voluntary exit, which is signed at a
-reserved leaf, see [Protection best practices](#protection-best-practices). At
-the upgrade, each validator that registered an XMSS public key with EIP-8483
-takes it in place of its BLS public key. A validator without a registration is
-exited at the upgrade and becomes withdrawable
-`UNREGISTERED_VALIDATOR_WITHDRAWABILITY_DELAY` epochs later. Its balance is then
-withdrawn, unless it has `0x00` withdrawal credentials, in which case its
-balance stays locked. See [the fork document](./fork.md) for details.
+reserved leaf, see [Protection best practices](#protection-best-practices).
+
+## Constants
+
+### Misc
+
+*[New in PQ]*
+
+| Name                | Value           |
+| ------------------- | --------------- |
+| `VRF_SECRET_DOMAIN` | `b"VRF_SECRET"` |
 
 PQ replaces the combined LMD-GHOST and Casper FFG attestation with separate head
 votes for the available chain (AC) and attestations for the finality gadget
@@ -136,13 +146,75 @@ AC locks maintained by fork choice.
 
 #### VRF tree
 
-A validator builds a Merkle tree of depth `VRF_TREE_DEPTH` whose leaves are
-secret random values, one for each slot, and registers the root of the tree as
-its VRF root with EIP-8483, as the last 32 bytes of the registration's
-`pq_data`. Its VRF proof for a slot is the leaf at index `slot`, followed by the
-leaf's Merkle branch. It reveals the proof as its RANDAO reveal when it
-proposes. The tree is fixed at registration, so a validator cannot grind its
+A validator's VRF seed, `vrf_seed`, is a secret 32-byte value from which its VRF
+tree is derived. It must be securely generated and kept secret, since anyone who
+learns it can compute the validator's future RANDAO reveals.
+
+The VRF seed is independent of the validator's XMSS private key. A validator's
+VRF root cannot be changed, so the validator must keep its VRF seed for as long
+as it validates and take it along when it moves to another client. A tree
+derived from any other seed has a different root, so its proofs fail
+verification and the validator's blocks are invalid.
+
+The VRF tree is a Merkle tree of depth `VRF_TREE_DEPTH`, hashed with
+`keccak256`, with one leaf for each slot. The leaf at index `slot` commits to
+the validator's secret for the slot, `compute_vrf_secret(vrf_seed, slot)`. A
+validator's VRF root is the root of its VRF tree, `compute_vrf_root(vrf_seed)`.
+Its VRF proof for a slot, `compute_vrf_proof(vrf_seed, slot)`, is the secret for
+the slot followed by the leaf's Merkle branch. It reveals the proof as its
+RANDAO reveal when it proposes. The branch holds only commitments, so it reveals
+no other secret. The tree is fixed in advance, so a validator cannot grind its
 proofs, and nobody can predict them before they are revealed.
+
+##### New `compute_vrf_secret`
+
+```python
+def compute_vrf_secret(vrf_seed: Bytes32, index: Uint64) -> Bytes32:
+    """
+    Return the secret for ``index`` of the VRF tree derived from ``vrf_seed``.
+    """
+    return keccak256(VRF_SECRET_DOMAIN + vrf_seed + uint_to_bytes(index))
+```
+
+##### New `compute_vrf_node`
+
+```python
+def compute_vrf_node(vrf_seed: Bytes32, height: Uint64, index: Uint64) -> Bytes32:
+    """
+    Return the node at ``index`` among the nodes ``height`` levels above the
+    leaves of the VRF tree derived from ``vrf_seed``.
+    """
+    if height == 0:
+        return compute_vrf_leaf(compute_vrf_secret(vrf_seed, index), index)
+    left = compute_vrf_node(vrf_seed, height - 1, 2 * index)
+    right = compute_vrf_node(vrf_seed, height - 1, 2 * index + 1)
+    return keccak256(left + right)
+```
+
+##### New `compute_vrf_root`
+
+```python
+def compute_vrf_root(vrf_seed: Bytes32) -> Root:
+    """
+    Return the root of the VRF tree derived from ``vrf_seed``.
+    """
+    return Root(compute_vrf_node(vrf_seed, VRF_TREE_DEPTH, Uint64(0)))
+```
+
+##### New `compute_vrf_proof`
+
+```python
+def compute_vrf_proof(vrf_seed: Bytes32, slot: Slot) -> VRFProof:
+    """
+    Return the secret for ``slot`` of the VRF tree derived from ``vrf_seed``,
+    followed by the Merkle branch of the leaf at index ``slot``.
+    """
+    branch = [
+        compute_vrf_node(vrf_seed, Uint64(height), Uint64((slot // 2**height) ^ 1))
+        for height in range(VRF_TREE_DEPTH)
+    ]
+    return VRFProof(data=[compute_vrf_secret(vrf_seed, Uint64(slot))] + branch)
+```
 
 #### XMSS public key
 
@@ -150,13 +222,6 @@ A validator's XMSS private key, `privkey`, is a 32-byte seed from which its
 leanXMSS key is derived. It must be securely generated along with the resultant
 XMSS public key. This `privkey` must be "hot", that is, constantly available to
 sign data throughout the lifetime of the validator.
-
-The XMSS public key is registered with EIP-8483 before the upgrade, as the first
-32 bytes of the registration's `pq_data`. The remaining 32 bytes are the
-validator's VRF root.
-
-*Note*: A validator that joins after the upgrade provides its XMSS public key
-and VRF root in its deposit instead, see [Submit deposit](#submit-deposit).
 
 ### Preregister
 
@@ -300,7 +365,7 @@ def get_signed_proposer_preferences(
     signing_root = compute_signing_root(preferences, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_leaf_index(proposal_slot, LEAF_OFFSET_PROPOSER_PREFERENCES)
-    signature = xmss.Sign(privkey, leaf_index, signing_root)
+    signature = xmss_sign(privkey, leaf_index, signing_root)
     return SignedProposerPreferences(message=preferences, signature=signature)
 ```
 
@@ -382,9 +447,8 @@ def prepare_execution_payload(
 
 ##### Randao reveal
 
-Set `block.body.randao_reveal` to the proposer's VRF proof for `block.slot`, the
-leaf at index `block.slot` of its VRF tree followed by the leaf's Merkle branch.
-`get_epoch_signature` is deprecated.
+Set `block.body.randao_reveal` to `compute_vrf_proof(vrf_seed, block.slot)`, the
+proposer's VRF proof for `block.slot`.
 
 ##### Head votes
 
@@ -428,7 +492,7 @@ position in block processing.
 
 ##### Proof
 
-The proposer sets `body.proof` to `stark.MergeProofs(proofs)`, where `proofs`
+The proposer sets `body.proof` to `stark_merge_proofs(proofs)`, where `proofs`
 holds the proofs of the aggregates behind `body.attestations`, ordered as the
 attestations are and, within each, by committee index, followed by the proofs of
 the aggregates behind `body.head_votes`, ordered as the head votes are. The
@@ -584,7 +648,7 @@ def get_block_signature(
     signing_root = compute_signing_root(block, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_leaf_index(block.slot, LEAF_OFFSET_BEACON_PROPOSER)
-    return xmss.Sign(privkey, leaf_index, signing_root)
+    return xmss_sign(privkey, leaf_index, signing_root)
 ```
 
 ### Head voting
@@ -639,7 +703,7 @@ def get_head_vote_signature(
     domain = get_domain(state, DOMAIN_HEAD_VOTE, compute_epoch_at_slot(data.slot))
     signing_root = compute_signing_root(data, domain)
     leaf_index = compute_xmss_leaf_index(data.slot, LEAF_OFFSET_HEAD_VOTE)
-    return xmss.Sign(privkey, leaf_index, signing_root)
+    return xmss_sign(privkey, leaf_index, signing_root)
 ```
 
 The validator must record the selected root before signing and must not sign
@@ -833,7 +897,7 @@ def get_attestation_signature(
     signing_root = compute_signing_root(attestation_data, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_attestation_leaf_index(round)
-    return xmss.Sign(privkey, leaf_index, signing_root)
+    return xmss_sign(privkey, leaf_index, signing_root)
 ```
 
 The signature covers `attestation.data`, but not `attestation.round` or
@@ -917,7 +981,7 @@ def get_aggregate_head_vote_stark(
     state: BeaconState, aggregate_vote: HeadVote, signatures: Sequence[XMSSSignature]
 ) -> AttestationProof:
     statement = get_head_vote_statement(state, aggregate_vote)
-    return AttestationProof(data=stark.ProveAggregates([statement], [signatures]))
+    return stark_prove_aggregates([statement], [signatures])
 ```
 
 ##### FG attestations
@@ -968,7 +1032,7 @@ def get_aggregate_stark(
     state: BeaconState, aggregate: Attestation, signatures: Sequence[Sequence[XMSSSignature]]
 ) -> AttestationProof:
     statements = get_attestation_statements(state, aggregate)
-    return AttestationProof(data=stark.ProveAggregates(statements, signatures))
+    return stark_prove_aggregates(statements, signatures)
 ```
 
 ##### Aggregation bits
@@ -1035,7 +1099,7 @@ def get_payload_attestation_message_signature(
     signing_root = compute_signing_root(attestation.data, domain)
     # [Modified in PQ]
     leaf_index = compute_xmss_leaf_index(attestation.data.slot, LEAF_OFFSET_PTC_ATTESTER)
-    return xmss.Sign(privkey, leaf_index, signing_root)
+    return xmss_sign(privkey, leaf_index, signing_root)
 ```
 
 ## Protection best practices
