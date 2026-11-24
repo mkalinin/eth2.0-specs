@@ -129,7 +129,7 @@ class Seen:
     # [New in PQ:EIP8453]
     attestation_validator_previous_targets: set[tuple[ValidatorIndex, Root]]
     # [New in PQ:EIP8453]
-    head_vote_validator_slots: dict[tuple[Slot, ValidatorIndex], set[Root]]
+    head_vote_validator_slots: dict[tuple[Slot, XMSSPubkey], set[Root]]
 ```
 
 ### Modified `compute_fork_version`
@@ -200,6 +200,8 @@ def verify_block_body_operation_limits(body: BeaconBlockBody) -> None:
     # [REJECT] The head vote count is within the limit
     if len(body.head_votes) > MAX_HEAD_VOTES:
         raise GossipReject("too many head votes")
+    if sum(len(vote.credentials) for vote in body.head_votes) > 2 * HEAD_VOTE_COMMITTEE_SIZE:
+        raise GossipReject("too many head vote credentials")
 ```
 
 ### Modified `verify_execution_requests_limits`
@@ -595,13 +597,6 @@ def validate_head_vote_gossip(
     if not previous_slot <= data.slot <= current_slot:
         raise GossipIgnore("head vote is not for the current or previous slot")
 
-    # [IGNORE] Forward at most two distinct vote data roots per validator and slot
-    head_vote_key = (data.slot, validator_index)
-    data_root = hash_tree_root(data)
-    roots = seen.head_vote_validator_slots.get(head_vote_key, set())
-    if data_root in roots or len(roots) >= 2:
-        raise GossipIgnore("duplicate head vote or two-vote limit reached")
-
     # [IGNORE] The block being voted for has been seen (via gossip or non-gossip sources)
     # (MAY be queued until block is retrieved)
     block_root = data.beacon_block_root
@@ -616,26 +611,29 @@ def validate_head_vote_gossip(
     if store.blocks[block_root].slot > data.slot:
         raise GossipReject("block being voted for is from a later slot")
 
-    state = get_pulled_up_state(store, get_head(store).root)
-
     # [IGNORE] The finalized block is an ancestor of the block being voted for
-    if not is_finalized_ancestor(store, state, block_root):
+    finalized_root = store.finalized_checkpoint.root
+    if finalized_root != Root() and not is_ancestor_root(store, block_root, finalized_root):
         raise GossipIgnore("finalized block is not an ancestor of the block being voted for")
 
     # The payload status is consistent with the block being voted for
     verify_head_vote_payload_status(store, data, block_payload_statuses)
 
-    # [REJECT] The validator is a member of the head vote committee
-    if validator_index not in get_head_vote_committee(state, data.slot):
-        raise GossipReject("validator is not in the head vote committee")
+    state = get_block_state(store, block_root)
+    # [REJECT] The validator index exists in the voted head's registry
+    if validator_index >= len(state.validators):
+        raise GossipReject("head vote validator index out of range")
 
-    # [REJECT] The signature is valid
-    validator = state.validators[validator_index]
-    domain = get_domain(state, DOMAIN_HEAD_VOTE, compute_epoch_at_slot(data.slot))
-    signing_root = compute_signing_root(data, domain)
-    leaf_index = compute_xmss_leaf_index(data.slot, LEAF_OFFSET_HEAD_VOTE)
-    if not xmss_verify(validator.pubkey, leaf_index, signing_root, head_vote_message.signature):
-        raise GossipReject("invalid head vote signature")
+    # [IGNORE] Forward at most two distinct vote data roots per signing key and slot
+    head_vote_key = (data.slot, state.validators[validator_index].pubkey)
+    data_root = hash_tree_root(data)
+    roots = seen.head_vote_validator_slots.get(head_vote_key, set())
+    if data_root in roots or len(roots) >= 2:
+        raise GossipIgnore("duplicate head vote or two-vote limit reached")
+
+    # [REJECT] The signed vote has positive ticket weight on its head
+    if get_head_vote_message_weight(state, head_vote_message) == 0:
+        raise GossipReject("invalid head vote signature, opening or ticket weight")
 
     # Mark this head vote as seen
     if head_vote_key not in seen.head_vote_validator_slots:

@@ -16,8 +16,10 @@ MAX_VALIDATORS_PER_AGGREGATE: 131072
 
 # Head votes
 # ---------------------------------------------------------------
-# 2**10 (= 1,024)
-HEAD_VOTE_COMMITTEE_SIZE: 1024
+# 2**9 (= 512)
+HEAD_VOTE_COMMITTEE_SIZE: 512
+HEAD_VOTE_QUORUM_DENOMINATOR: 576
+HEAD_VOTE_PAYMENT_TARGET: 128
 
 # Rewards
 # ---------------------------------------------------------------

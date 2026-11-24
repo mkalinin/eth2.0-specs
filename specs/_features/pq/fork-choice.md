@@ -39,8 +39,7 @@
   - [Available chain](#available-chain)
     - [New `ACVote`](#new-acvote)
     - [New `get_ac_vote`](#new-get_ac_vote)
-    - [New `get_head_vote_committee_seats_count`](#new-get_head_vote_committee_seats_count)
-    - [New `get_validator_seats_count`](#new-get_validator_seats_count)
+    - [New `sum_head_vote_weights`](#new-sum_head_vote_weights)
     - [New `get_block_and_payload_receipt_time`](#new-get_block_and_payload_receipt_time)
     - [New `get_vote_resolution_time`](#new-get_vote_resolution_time)
     - [New `get_local_view_from_p2p_messages`](#new-get_local_view_from_p2p_messages)
@@ -49,7 +48,7 @@
     - [New `get_proposer_view`](#new-get_proposer_view)
     - [New `compute_merged_view`](#new-compute_merged_view)
     - [New `get_combined_local_view`](#new-get_combined_local_view)
-    - [New `get_equivocating_indices`](#new-get_equivocating_indices)
+    - [New `get_equivocating_pubkeys`](#new-get_equivocating_pubkeys)
     - [New `get_viable_ancestor`](#new-get_viable_ancestor)
     - [New `get_live_locks`](#new-get_live_locks)
     - [New `conflicts_with_lock`](#new-conflicts_with_lock)
@@ -77,7 +76,7 @@
     - [New `update_optimistic_confirmation`](#new-update_optimistic_confirmation)
     - [New `unlock`](#new-unlock)
   - [`on_head_vote_message` helpers](#on_head_vote_message-helpers)
-    - [New `is_valid_head_vote_message`](#new-is_valid_head_vote_message)
+    - [New `get_head_vote_message_weight`](#new-get_head_vote_message_weight)
 - [Handlers](#handlers)
   - [Modified `on_tick`](#modified-on_tick)
   - [Modified `on_block`](#modified-on_block)
@@ -209,11 +208,9 @@ class Store:
     locks: set[ACLock]
     head_vote_messages: dict[Slot, list[HeadVoteMessage]]
     head_vote_message_receipt_times: dict[Root, Uint64]
-    head_vote_committees: dict[Slot, HeadVoteCommittee]
+    validated_head_votes: dict[Root, ACVote]
     prepared_head_vote: tuple[Slot, ForkChoiceNode] | None = None
-    pending_head_votes: list[tuple[HeadVoteMessage, HeadVoteCommittee]] = field(
-        default_factory=list
-    )
+    pending_head_votes: list[tuple[HeadVoteMessage, ACVote]] = field(default_factory=list)
 ```
 
 ### Modified `get_forkchoice_store`
@@ -259,7 +256,7 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         locks=set(),
         head_vote_messages={},
         head_vote_message_receipt_times={},
-        head_vote_committees={},
+        validated_head_votes={},
     )
 ```
 
@@ -309,7 +306,7 @@ def upgrade_store_to_pq(pre: eip8483.Store) -> Store:
         locks=set(),
         head_vote_messages={},
         head_vote_message_receipt_times={},
-        head_vote_committees={},
+        validated_head_votes={},
     )
 ```
 
@@ -634,50 +631,41 @@ including deduplication and merging votes from messages and blocks.
 @dataclass(eq=True, frozen=True)
 class ACVote:
     slot: Slot
-    validator_index: ValidatorIndex
+    pubkey: XMSSPubkey
     supported_node: ForkChoiceNode
+    weight: Uint64
 ```
 
 #### New `get_ac_vote`
 
 ```python
-def get_ac_vote(validator_index: ValidatorIndex, data: HeadVoteData) -> ACVote:
-    """
-    Create an AC vote for ``validator_index`` from the head vote ``data``.
-    """
+def get_ac_vote(pubkey: XMSSPubkey, data: HeadVoteData, weight: Uint64) -> ACVote:
     supported_node = ForkChoiceNode(
         root=data.beacon_block_root,
         payload_status=data.payload_status,
     )
     return ACVote(
         slot=data.slot,
-        validator_index=validator_index,
+        pubkey=pubkey,
         supported_node=supported_node,
+        weight=weight,
     )
 ```
 
-#### New `get_head_vote_committee_seats_count`
+#### New `sum_head_vote_weights`
+
+A vote contributes tickets derived from its own head. When an existing
+equivocation rule counts a voter once in a tally, use the maximum weight of that
+voter's applicable votes in that tally. Across branches, the authenticated
+public key identifies the voter; the validator index is local to the voted head.
 
 ```python
-def get_head_vote_committee_seats_count() -> Uint64:
-    """
-    Return size of the head vote committee.
-    """
-    return HEAD_VOTE_COMMITTEE_SIZE
-```
-
-#### New `get_validator_seats_count`
-
-*Note*: The head vote committee selection may assign multiple seats to the same
-validator.
-
-```python
-def get_validator_seats_count(store: Store, slot: Slot, validator_index: ValidatorIndex) -> Uint64:
-    """
-    Return the number of seats assigned to ``validator_index`` in the head vote committee for ``slot``.
-    """
-    assert slot in store.head_vote_committees
-    return Uint64(store.head_vote_committees[slot].count(validator_index))
+def sum_head_vote_weights(votes: Sequence[ACVote] | set[ACVote], slot: Slot) -> Uint64:
+    weights: dict[XMSSPubkey, Uint64] = {}
+    for vote in votes:
+        if vote.slot == slot:
+            weights[vote.pubkey] = max(weights.get(vote.pubkey, Uint64(0)), vote.weight)
+    return Uint64(sum(weights.values()))
 ```
 
 #### New `get_block_and_payload_receipt_time`
@@ -775,9 +763,10 @@ def get_local_view_from_p2p_messages(
 
 #### New `get_declaration_view`
 
-*Note*: A declaration is held if the signed pool contains the exact vote or two
-distinct votes by its validator for the same slot and committee. In the latter
-case the view uses the declared head, not either signed head.
+*Note*: An exact signed vote supplies the declaration's weight. Otherwise, two
+distinct signed votes by the declared validator satisfy readiness and enter the
+view as equivocation evidence. They supply weight only to the signed heads and
+are not marked as proposer support.
 
 ```python
 def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACVote], bool]:
@@ -789,13 +778,14 @@ def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACV
     if slot == GENESIS_SLOT:
         return votes, support, False
     vote_slot = Slot(slot - 1)
-    signed: dict[ValidatorIndex, set[ACVote]] = {}
+    signed: dict[tuple[ValidatorIndex, Root], ACVote] = {}
+    by_pubkey: dict[XMSSPubkey, set[ACVote]] = {}
     for message in store.head_vote_messages.get(vote_slot, []):
-        index = message.validator_index
-        if index not in signed:
-            signed[index] = set()
-        signed[index].add(get_ac_vote(index, message.data))
-    committee = store.head_vote_committees.get(vote_slot)
+        vote = store.validated_head_votes[hash_tree_root(message)]
+        signed[(message.validator_index, hash_tree_root(message.data))] = vote
+        if vote.pubkey not in by_pubkey:
+            by_pubkey[vote.pubkey] = set()
+        by_pubkey[vote.pubkey].add(vote)
     for root in {node.root for node in tree}:
         block = store.blocks[root]
         if block.slot != slot:
@@ -805,26 +795,25 @@ def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACV
         if not block.body.head_vote_declarations:
             ready_proposal = True
             continue
-        proposal_committee = get_head_vote_committee(get_block_state(store, root), vote_slot)
-        if committee is not None and committee != proposal_committee:
-            ready_proposal = True
-            continue
-        members = set(proposal_committee)
         for declaration, marked in zip(
             block.body.head_vote_declarations, block.body.head_vote_support_bits, strict=True
         ):
             index = declaration.validator_index
-            if index not in members:
-                continue
             data = HeadVoteData(
                 slot=vote_slot,
                 beacon_block_root=declaration.beacon_block_root,
                 payload_status=declaration.payload_status,
             )
-            vote = get_ac_vote(index, data)
-            evidence = signed.get(index, set())
-            if not (vote in evidence or len(evidence) == 2):
-                all_held = False
+            vote = signed.get((index, hash_tree_root(data)))
+            if vote is None:
+                evidence: set[ACVote] = set()
+                if data.beacon_block_root in store.block_states:
+                    state = get_block_state(store, data.beacon_block_root)
+                    if index < len(state.validators):
+                        evidence = by_pubkey.get(state.validators[index].pubkey, set())
+                all_held &= len(evidence) == 2
+                if len(evidence) == 2:
+                    votes.update(evidence)
                 continue
             votes.add(vote)
             if marked:
@@ -875,6 +864,7 @@ deduplicating votes and combining their support.
 
 ```python
 def compute_merged_view(
+    store: Store,
     votes_from_messages: tuple[list[HeadVoteMessage], list[int]],
     votes_from_blocks: tuple[set[ACVote], set[ACVote]],
 ) -> tuple[set[ACVote], set[ACVote]]:
@@ -886,7 +876,7 @@ def compute_merged_view(
 
     # Process p2p message votes
     for index, message_vote in enumerate(votes_from_messages[0]):
-        vote = get_ac_vote(message_vote.validator_index, message_vote.data)
+        vote = store.validated_head_votes[hash_tree_root(message_vote)]
         votes.add(vote)
         if index in votes_from_messages[1]:
             support_votes.add(vote)
@@ -906,22 +896,23 @@ def get_combined_local_view(
     votes_from_messages = get_local_view_from_p2p_messages(
         store, slot, receipt_threshold_ms, resolution_threshold_ms
     )
-    return compute_merged_view(votes_from_messages, (set(), set()))
+    return compute_merged_view(store, votes_from_messages, (set(), set()))
 ```
 
-#### New `get_equivocating_indices`
+#### New `get_equivocating_pubkeys`
 
 ```python
-def get_equivocating_indices(votes: set[ACVote]) -> set[ValidatorIndex]:
+def get_equivocating_pubkeys(votes: set[ACVote]) -> set[XMSSPubkey]:
     """
-    Return indices of validators with multiple distinct votes.
+    Return public keys of validators with multiple distinct votes.
     """
-    equivocating_indices: set[ValidatorIndex] = set()
-    for voter_index in {vote.validator_index for vote in votes}:
-        votes_by_index = {vote for vote in votes if vote.validator_index == voter_index}
-        if len(votes_by_index) > 1:
-            equivocating_indices.add(voter_index)
-    return equivocating_indices
+    seen: set[XMSSPubkey] = set()
+    equivocating: set[XMSSPubkey] = set()
+    for vote in votes:
+        if vote.pubkey in seen:
+            equivocating.add(vote.pubkey)
+        seen.add(vote.pubkey)
+    return equivocating
 ```
 
 #### New `get_viable_ancestor`
@@ -1039,30 +1030,12 @@ def compute_head_walk_score(
     """
     Return the sum of the equivocating score and the node's supporting score.
     """
-    equivocating_indices = get_equivocating_indices(votes)
-    # Votes for any descendant from the support set
-    # cast by non-equivocating voters of a given slot
-    supporting_indices = {
-        vote.validator_index
-        for vote in support_votes
-        if vote.validator_index not in equivocating_indices
-        and vote.slot == slot
-        and is_ancestor(store, vote.supported_node, node)
+    equivocating_pubkeys = get_equivocating_pubkeys(votes)
+    scoring_votes = {vote for vote in votes if vote.pubkey in equivocating_pubkeys}
+    scoring_votes |= {
+        vote for vote in support_votes if is_ancestor(store, vote.supported_node, node)
     }
-    equivocating_score = Uint64(
-        sum(
-            get_validator_seats_count(store, slot, validator_index)
-            for validator_index in equivocating_indices
-        )
-    )
-    supporting_score = Uint64(
-        sum(
-            get_validator_seats_count(store, slot, validator_index)
-            for validator_index in supporting_indices
-        )
-    )
-    # Equivocating score counts for every block
-    return equivocating_score + supporting_score
+    return sum_head_vote_weights(scoring_votes, slot)
 ```
 
 #### New `is_eligible_for_head_walk`
@@ -1097,14 +1070,7 @@ def is_eligible_for_head_walk(
     if block.slot == get_current_slot(store):
         return True
 
-    # Total seats of all voters
-    voting_indices = {vote.validator_index for vote in votes}
-    voting_seats_count = Uint64(
-        sum(
-            get_validator_seats_count(store, slot, validator_index)
-            for validator_index in voting_indices
-        )
-    )
+    voting_seats_count = sum_head_vote_weights(votes, slot)
     score = compute_head_walk_score(store, votes, support_votes, slot, node)
 
     # Require a strict majority of participating committee seats
@@ -1199,18 +1165,15 @@ def compute_confirmation_score(
     """
     Return confirmation score of the ``node``.
     """
-    equivocating_indices = get_equivocating_indices(votes)
-    supporting_indices = {
-        vote.validator_index
-        for vote in support_votes
-        if vote.validator_index not in equivocating_indices
-        and is_ancestor(store, vote.supported_node, node)
-    }
-    return Uint64(
-        sum(
-            get_validator_seats_count(store, slot, validator_index)
-            for validator_index in supporting_indices
-        )
+    equivocating_pubkeys = get_equivocating_pubkeys(votes)
+    return sum_head_vote_weights(
+        [
+            vote
+            for vote in support_votes
+            if vote.pubkey not in equivocating_pubkeys
+            and is_ancestor(store, vote.supported_node, node)
+        ],
+        slot,
     )
 ```
 
@@ -1228,13 +1191,7 @@ def get_confirmed_head(
     """
     Return the confirmation candidate, or ``None`` if no node has sufficient support.
     """
-    voting_indices = {vote.validator_index for vote in votes}
-    voting_seats_count = Uint64(
-        sum(
-            get_validator_seats_count(store, slot, validator_index)
-            for validator_index in voting_indices
-        )
-    )
+    voting_seats_count = sum_head_vote_weights(votes, slot)
 
     def is_eligible(node: ForkChoiceNode) -> bool:
         return (
@@ -1288,8 +1245,8 @@ def compute_confirmed_lock(
 #### New `compute_fast_lock`
 
 *Note*: Selects non-genesis nodes on the path to `confirmed` within the FG frame
-whose confirmation support accounts for at least half of all committee seats.
-The deepest selected node is the fast lock.
+whose confirmation support reaches half the fixed quorum denominator. The
+deepest selected node is the fast lock.
 
 ```python
 def compute_fast_lock(
@@ -1311,7 +1268,7 @@ def compute_fast_lock(
         confirmed=confirmed,
         test_predicate=lambda node: (
             2 * compute_confirmation_score(store, votes, support_votes, slot, node)
-            >= get_head_vote_committee_seats_count()
+            >= HEAD_VOTE_QUORUM_DENOMINATOR
         ),
     )
 ```
@@ -1487,30 +1444,18 @@ def record_payload_receipt_time(store: Store, root: Root) -> None:
 #### New `record_head_vote_message`
 
 ```python
-def record_head_vote_message(
-    store: Store, committee: HeadVoteCommittee, message: HeadVoteMessage
-) -> None:
+def record_head_vote_message(store: Store, message: HeadVoteMessage, vote: ACVote) -> None:
     """
-    Store head vote message in the pool, updates its receipt time and its slot committee.
+    Store the vote with its receipt time, authenticated key and ticket weight.
     """
-    stored_committee = store.head_vote_committees.get(message.data.slot)
-    if stored_committee is not None and stored_committee != committee:
-        return
-    # Keep at most two distinct vote data values for each validator and slot.
     slot_pool = store.head_vote_messages.get(message.data.slot, [])
-    previous = [vote for vote in slot_pool if vote.validator_index == message.validator_index]
-    if any(vote.data == message.data for vote in previous) or len(previous) >= 2:
-        return
     slot_pool.append(message)
     store.head_vote_messages[message.data.slot] = slot_pool
 
     # Add receipt time
     message_root = hash_tree_root(message)
     store.head_vote_message_receipt_times[message_root] = store.time_ms
-
-    # The first validated view supplies the committee for this slot.
-    if message.data.slot not in store.head_vote_committees:
-        store.head_vote_committees[message.data.slot] = committee
+    store.validated_head_votes[message_root] = vote
 ```
 
 ### `on_tick` helpers
@@ -1567,10 +1512,10 @@ def update_confirmation(store: Store, slot: Slot) -> None:
 #### New `update_optimistic_confirmation`
 
 *Note*: Before the half-slot cutoff, a node confirms the deepest node supported
-by resolved votes from at least three quarters of the current committee seats
-and conflicting with no live lock. Equal-depth candidates prefer a decided
-payload over PENDING, then the lowest root and payload status. Each validator
-counts once per candidate, including an equivocator with a vote extending that
+by resolved votes reaching three quarters of the fixed quorum denominator and
+conflicting with no live lock. Equal-depth candidates prefer a decided payload
+over PENDING, then the lowest root and payload status. Each validator counts
+once per candidate, including an equivocator with a vote extending that
 candidate. This writes a current-slot fast lock but does not write a scheduled
 confirmation candidate or emit an FG attestation.
 
@@ -1587,14 +1532,14 @@ def update_optimistic_confirmation(store: Store) -> None:
     candidates = set()
     for node in fg_frame.tree:
         voters = {
-            vote.validator_index
+            vote
             for vote in support_votes
             if vote.slot == slot
             and vote.supported_node in fg_frame.tree
             and is_ancestor(store, vote.supported_node, node)
         }
-        seats = sum(get_validator_seats_count(store, slot, index) for index in voters)
-        if 4 * seats >= 3 * get_head_vote_committee_seats_count() and not conflicts_with_lock(
+        seats = sum_head_vote_weights(voters, slot)
+        if 4 * seats >= 3 * HEAD_VOTE_QUORUM_DENOMINATOR and not conflicts_with_lock(
             store, live_locks, node
         ):
             candidates.add(node)
@@ -1622,7 +1567,7 @@ def update_optimistic_confirmation(store: Store) -> None:
 
 *Note*: Equivocators count as opposition to every node. Other validators count
 when their resolved vote supports a conflicting node. Count each validator's
-committee seats once. Only locks from slots before the vote slot can move.
+maximum applicable ticket weight. Only locks from before the vote slot can move.
 
 ```python
 def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVote]) -> None:
@@ -1630,21 +1575,18 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
     Move older locks using the supplied vote and support view.
     """
     fg_frame = get_fg_frame(store)
-    equivocating_indices = get_equivocating_indices(votes)
+    equivocating_pubkeys = get_equivocating_pubkeys(votes)
 
     def is_opposed_by_majority(node: ForkChoiceNode) -> bool:
-        opposing_voters = equivocating_indices | {
-            vote.validator_index
+        opposing_votes = {vote for vote in votes if vote.pubkey in equivocating_pubkeys}
+        opposing_votes |= {
+            vote
             for vote in support_votes
             if vote.slot == slot
             and vote.supported_node in fg_frame.tree
             and not is_compatible(store, vote.supported_node, node)
         }
-        opposing_score = sum(
-            get_validator_seats_count(store, slot, validator_index)
-            for validator_index in opposing_voters
-        )
-        return 2 * opposing_score >= get_head_vote_committee_seats_count()
+        return 2 * sum_head_vote_weights(opposing_votes, slot) >= HEAD_VOTE_QUORUM_DENOMINATOR
 
     locks = set()
     for lock in get_live_locks(store, fg_frame, store.time_ms):
@@ -1666,27 +1608,25 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
 
 ### `on_head_vote_message` helpers
 
-#### New `is_valid_head_vote_message`
+#### New `get_head_vote_message_weight`
 
 ```python
-def is_valid_head_vote_message(state: BeaconState, message: HeadVoteMessage) -> bool:
+def get_head_vote_message_weight(state: BeaconState, message: HeadVoteMessage) -> Uint64:
     """
-    Return ``True`` if head vote message is valid.
+    Return the weight of a valid head vote message, or zero.
     """
-    # Vote must have correct payload_status
     if not is_head_vote_payload_status_valid(state, message.data):
-        return False
-
-    # Validator must belong to the selected committee
-    if message.validator_index not in get_head_vote_committee(state, message.data.slot):
-        return False
-
-    # Vote must have a valid signature
+        return Uint64(0)
+    weight = get_head_vote_weight(state, message.data.slot, message.validator_index, message.proof)
+    if weight == 0:
+        return Uint64(0)
     domain = get_domain(state, DOMAIN_HEAD_VOTE, compute_epoch_at_slot(message.data.slot))
     signing_root = compute_signing_root(message.data, domain)
     leaf_index = compute_xmss_leaf_index(message.data.slot, LEAF_OFFSET_HEAD_VOTE)
     pubkey = state.validators[message.validator_index].pubkey
-    return xmss_verify(pubkey, leaf_index, signing_root, message.signature)
+    if not xmss_verify(pubkey, leaf_index, signing_root, message.signature):
+        return Uint64(0)
+    return weight
 ```
 
 ## Handlers
@@ -1702,8 +1642,7 @@ advancing to its wall time. It skips all duties in earlier slots, including when
 catching up from an old anchor: it must not call this handler for those
 historical duty timestamps. Within the current slot, the first physical tick at
 or after a deadline dispatches that duty with its scheduled timestamp. Queued
-early votes carry their validated committee and are admitted without
-revalidation against a possibly changed head state.
+early votes carry their validated weight into the slot.
 
 ```python
 def on_tick(store: Store, time_ms: Uint64) -> None:
@@ -1723,8 +1662,8 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
         for root, time in store.head_vote_message_receipt_times.items()
         if root in retained_roots
     }
-    store.head_vote_committees = {
-        s: committee for s, committee in store.head_vote_committees.items() if s >= previous_slot
+    store.validated_head_votes = {
+        root: vote for root, vote in store.validated_head_votes.items() if root in retained_roots
     }
     store.saved_confirmations = {
         s: node
@@ -1734,11 +1673,11 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
 
     pending = store.pending_head_votes
     store.pending_head_votes = []
-    for message, committee in pending:
+    for message, vote in pending:
         if message.data.slot > slot:
-            store.pending_head_votes.append((message, committee))
+            store.pending_head_votes.append((message, vote))
         elif message.data.slot >= previous_slot:
-            record_head_vote_message(store, committee, message)
+            record_head_vote_message(store, message, vote)
             update_optimistic_confirmation(store)
             get_ac_vote_head(store)
 
@@ -1991,49 +1930,50 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     current_slot = get_current_slot(store)
     previous_slot = saturating_sub(current_slot, 1)
     data = message.data
-    if data.beacon_block_root in store.blocks:
-        block_slot = store.blocks[data.beacon_block_root].slot
-        assert block_slot <= data.slot
-        if block_slot == data.slot:
-            assert data.payload_status == PAYLOAD_STATUS_PENDING
-        else:
-            assert data.payload_status in (PAYLOAD_STATUS_EMPTY, PAYLOAD_STATUS_FULL)
+    if (
+        data.beacon_block_root not in store.blocks
+        or data.beacon_block_root not in store.block_states
+    ):
+        return
+    block_slot = store.blocks[data.beacon_block_root].slot
+    assert block_slot <= data.slot
+    if block_slot == data.slot:
+        assert data.payload_status == PAYLOAD_STATUS_PENDING
+    else:
+        assert data.payload_status in (PAYLOAD_STATUS_EMPTY, PAYLOAD_STATUS_FULL)
 
-    if message.data.slot == current_slot + 1:
+    early = data.slot == current_slot + 1
+    if early:
         slot_start = compute_time_at_slot_ms(store.genesis_time_ms, message.data.slot)
         if store.time_ms + MAXIMUM_GOSSIP_CLOCK_DISPARITY < slot_start:
             return
-        previous = [
-            vote
-            for vote, _ in store.pending_head_votes
-            if vote.validator_index == message.validator_index
-            and vote.data.slot == message.data.slot
-        ]
-        if any(vote.data == message.data for vote in previous) or len(previous) >= 2:
-            return
-        state = get_pulled_up_state(store, get_head(store).root)
-        assert is_valid_head_vote_message(state, message)
-        store.pending_head_votes.append((
-            message,
-            get_head_vote_committee(state, message.data.slot),
-        ))
-        return
-    if message.data.slot not in [previous_slot, current_slot]:
-        return
-    previous = [
-        vote
-        for vote in store.head_vote_messages.get(message.data.slot, [])
-        if vote.validator_index == message.validator_index
-    ]
-    if any(vote.data == message.data for vote in previous) or len(previous) >= 2:
+    elif data.slot not in [previous_slot, current_slot]:
         return
 
-    # Use pulled up head state
-    state = get_pulled_up_state(store, get_head(store).root)
-    assert is_valid_head_vote_message(state, message)
+    state = get_block_state(store, data.beacon_block_root)
+    assert message.validator_index < len(state.validators)
+    pubkey = state.validators[message.validator_index].pubkey
+    if early:
+        pool = store.pending_head_votes
+    else:
+        pool = [
+            (prior, store.validated_head_votes[hash_tree_root(prior)])
+            for prior in store.head_vote_messages.get(data.slot, [])
+        ]
+    previous = [
+        prior.data for prior, vote in pool if vote.pubkey == pubkey and vote.slot == data.slot
+    ]
+    if data in previous or len(previous) >= 2:
+        return
+    weight = get_head_vote_message_weight(state, message)
+    assert weight > 0
+    vote = get_ac_vote(pubkey, data, weight)
+    if early:
+        store.pending_head_votes.append((message, vote))
+        return
 
     # Record the message
-    record_head_vote_message(store, get_head_vote_committee(state, message.data.slot), message)
+    record_head_vote_message(store, message, vote)
     update_optimistic_confirmation(store)
     get_ac_vote_head(store)
 ```
@@ -2067,7 +2007,9 @@ def get_ac_proposal(
     )
 
     # Build the view from P2P messages only
-    votes, support_votes = compute_merged_view((vote_messages, support_indices), (set(), set()))
+    votes, support_votes = compute_merged_view(
+        store, (vote_messages, support_indices), (set(), set())
+    )
     unlock(store, current_slot - 1, votes, support_votes)
     head = get_head_in_tree(
         store=store,
@@ -2084,7 +2026,7 @@ def get_ac_proposal(
 
     declarations = HeadVoteDeclarations()
     bits = HeadVoteSupportBits()
-    for message in vote_messages:
+    for position, message in enumerate(vote_messages[: 4 * HEAD_VOTE_COMMITTEE_SIZE]):
         declarations.append(
             HeadVoteDeclaration(
                 validator_index=message.validator_index,
@@ -2092,17 +2034,15 @@ def get_ac_proposal(
                 payload_status=message.data.payload_status,
             )
         )
-        bits.append(Boolean(get_ac_vote(message.validator_index, message.data) in support_votes))
+        bits.append(Boolean(position in support_indices))
     return head, declarations, bits
 ```
 
 ### New `is_ac_vote_ready`
 
-*Note*: Only declarations by members of the proposal's previous-slot committee
-are eligible. If the signed pool has recorded a different committee for the
-slot, none of that proposal's declarations are eligible. Every eligible
-declaration across current-slot proposals must be held, and one proposal must
-have usable heads for all its marked eligible declarations.
+*Note*: Declarations across current-slot proposals must be held by an exact vote
+or equivocation evidence. At least one proposal must have usable heads for its
+marked exact votes.
 
 ```python
 def is_ac_vote_ready(store: Store) -> bool:
@@ -2150,7 +2090,7 @@ def get_ac_vote_head(store: Store) -> ForkChoiceNode | None:
     # Proposer view
     proposer_view = get_proposer_view(store, current_slot)
     # Merge views
-    votes, support_votes = compute_merged_view(local_view, proposer_view)
+    votes, support_votes = compute_merged_view(store, local_view, proposer_view)
     unlock(store, current_slot - 1, votes, support_votes)
 
     # Run over voter viable subtree

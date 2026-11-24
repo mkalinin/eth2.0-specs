@@ -14,7 +14,6 @@
   - [New `compute_pending_deposits`](#new-compute_pending_deposits)
   - [New `compute_builder_pending_withdrawals`](#new-compute_builder_pending_withdrawals)
   - [New `compute_builder_pending_payments`](#new-compute_builder_pending_payments)
-  - [New `initialize_head_vote_committee_window`](#new-initialize_head_vote_committee_window)
 - [Fork to PQ](#fork-to-pq)
   - [Fork trigger](#fork-trigger)
   - [Upgrading the fork choice store](#upgrading-the-fork-choice-store)
@@ -268,22 +267,6 @@ def compute_builder_pending_payments(pre: eip8483.BeaconState) -> BuilderPending
     return BuilderPendingPayments(data=payments)
 ```
 
-### New `initialize_head_vote_committee_window`
-
-```python
-def initialize_head_vote_committee_window(state: BeaconState) -> HeadVoteCommitteeWindow:
-    """
-    Return the head vote committee window starting from the current epoch.
-    """
-    committees = [HeadVoteCommittee() for _ in range(SLOTS_PER_EPOCH)]
-    current_epoch = get_current_epoch(state)
-    start_slot = compute_start_slot_at_epoch(current_epoch)
-    end_slot = compute_start_slot_at_epoch(current_epoch + MIN_SEED_LOOKAHEAD + 1)
-    for slot in range(start_slot, end_slot):
-        committees.append(compute_head_vote_committee(state, Slot(slot)))
-    return HeadVoteCommitteeWindow(data=committees)
-```
-
 ## Fork to PQ
 
 ### Fork trigger
@@ -326,6 +309,11 @@ because the state stores only the commitment.
 *Note*: The finality gadget starts at height 0 from the last finalized Casper
 FFG checkpoint, and the target of height 1 is the latest block before the
 upgrade. Participation in the last epoch before the upgrade is not rewarded.
+
+AC starts at era zero with cursor zero. Batches zero and one use the eligible
+weights at the fork and the completed pre-fork RANDAO mix (the genesis mix at a
+genesis fork). Their batch numbers distinguish their draws. Later descriptors
+pair captured weights with a mix completed after capture.
 
 ```python
 def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
@@ -439,11 +427,27 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
         # [New in PQ:EIP8453]
         head_vote_participation=HeadVoteParticipation(),
         # [New in PQ:EIP8453]
-        head_vote_committee_window=HeadVoteCommitteeWindow(),
+        era=Era(0),
+        era_start_slot=pre.slot,
+        head_vote_era_history=HeadVoteEraHistory(),
+        head_vote_lotteries=HeadVoteLotteries(),
+        head_vote_sealed_lottery=HeadVoteLottery.empty(),
+        head_vote_pending_weights=HeadVoteWeights(),
+        head_vote_latest_weights=HeadVoteWeights(),
     )
 
     # [New in PQ:EIP8453]
-    post.head_vote_committee_window = initialize_head_vote_committee_window(post)
+    weights = get_head_vote_weights(post, epoch)
+    seed_epoch = epoch - 1 if epoch > GENESIS_EPOCH else GENESIS_EPOCH
+    lottery = HeadVoteLottery(
+        weights=weights,
+        total_weight=Uint64(sum(int(weight) for weight in weights)),
+        seed=get_randao_mix(post, seed_epoch),
+    )
+    post.head_vote_lotteries[0] = lottery
+    post.head_vote_lotteries[1] = lottery
+    post.head_vote_sealed_lottery = lottery
+    post.head_vote_latest_weights = weights
 
     return post
 ```

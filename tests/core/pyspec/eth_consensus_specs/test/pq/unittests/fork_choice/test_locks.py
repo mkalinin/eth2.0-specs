@@ -7,9 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from eth_consensus_specs.test import context
-from eth_consensus_specs.test.helpers.genesis import create_genesis_state
-from eth_consensus_specs.test.helpers.keys import privkeys
-from eth_consensus_specs.test.helpers.pq.fork import upgrade_registered_to_pq
+from eth_consensus_specs.test.helpers.keys import get_vrf_proof, get_vrf_root
 
 pytestmark = pytest.mark.usefixtures("fake_xmss")
 
@@ -75,7 +73,7 @@ def tree(spec):
         locks=set(),
         head_vote_messages={},
         head_vote_message_receipt_times={},
-        head_vote_committees={},
+        validated_head_votes={},
     )
     return store, nodes
 
@@ -84,25 +82,35 @@ def lock(spec, node, slot=9, fast=True, expiry=13):
     return spec.ACLock(node=node, slot=spec.Slot(slot), fast=fast, expiry_slot=spec.Slot(expiry))
 
 
-def vote(spec, store, node, validator, slot=10, received=None):
+def vote(spec, store, node, validator, slot=10, received=None, weight=1):
     message = spec.HeadVoteMessage(
         validator_index=validator,
         data=spec.HeadVoteData(
             slot=slot, beacon_block_root=node.root, payload_status=node.payload_status
         ),
     )
-    store.head_vote_messages.setdefault(spec.Slot(slot), []).append(message)
-    store.head_vote_message_receipt_times[spec.hash_tree_root(message)] = (
+    if slot not in store.head_vote_messages:
+        store.head_vote_messages[slot] = []
+    store.head_vote_messages[slot].append(message)
+    root = spec.hash_tree_root(message)
+    store.head_vote_message_receipt_times[root] = (
         at_slot(spec, slot) if received is None else received
     )
-    store.head_vote_committees.setdefault(
-        spec.Slot(slot), spec.HeadVoteCommittee(data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE)))
+    store.validated_head_votes[root] = spec.get_ac_vote(
+        spec.XMSSPubkey(validator.to_bytes(32, "little")), message.data, spec.Uint64(weight)
     )
 
 
 def vote_half(spec, store, node, slot=10):
-    for validator in range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2):
+    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
         vote(spec, store, node, validator, slot)
+
+
+def add_elected_validator(spec, state):
+    state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(1), vrf_root=get_vrf_root(0)))
+    state.head_vote_lotteries[0] = spec.HeadVoteLottery(
+        weights=spec.HeadVoteWeights(data=[1]), total_weight=1
+    )
 
 
 def test_fast_expiry_grows_and_is_capped(spec, tree):
@@ -110,9 +118,7 @@ def test_fast_expiry_grows_and_is_capped(spec, tree):
     expiries = []
     for slot in range(10, 43):
         store.time_ms = at_slot(spec, slot + 1) + spec.get_support_cutoff_ms()
-        vote(spec, store, nodes["A"], 0, slot=slot)
-        half = spec.HEAD_VOTE_COMMITTEE_SIZE // 2
-        store.head_vote_committees[slot] = spec.HeadVoteCommittee(data=[0] * half + [1] * half)
+        vote(spec, store, nodes["A"], 0, slot=slot, weight=spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2)
         spec.update_confirmation(store, spec.Slot(slot))
         current = [item for item in store.locks if item.slot == slot and item.fast]
         assert len(current) == 1
@@ -235,9 +241,6 @@ def test_missing_candidate_breaks_slow_streak(spec, tree, missing):
 def test_no_candidate_clears_saved_slot(spec, tree):
     store, nodes = tree
     store.saved_confirmations[10] = nodes["A"]
-    store.head_vote_committees[10] = spec.HeadVoteCommittee(
-        data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE))
-    )
     spec.update_confirmation(store, spec.Slot(10))
     assert 10 not in store.saved_confirmations
 
@@ -299,7 +302,7 @@ def test_unlock_below_half_keeps_lock(spec, tree):
     store, nodes = tree
     original = lock(spec, nodes["A"])
     store.locks = {original}
-    for validator in range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2 - 1):
+    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2 - 1):
         vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
@@ -333,7 +336,7 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
     store.locks = {original}
     unknown_a = replace(nodes["A"], root=spec.Root(b"\xfe" * 32))
     unknown_b = replace(nodes["B"], root=spec.Root(b"\xff" * 32))
-    for validator in range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2):
+    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
         vote(spec, store, unknown_a, validator)
         vote(spec, store, unknown_b, validator)
     spec.unlock(
@@ -354,7 +357,7 @@ def test_unlock_equivocator_not_counted_twice(spec, tree):
     # One equivocator plus half-minus-two clean opponents is still below half.
     vote(spec, store, nodes["A"], 0)
     vote(spec, store, nodes["B"], 0)
-    for validator in range(1, spec.HEAD_VOTE_COMMITTEE_SIZE // 2 - 1):
+    for validator in range(1, spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2 - 1):
         vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
@@ -370,9 +373,7 @@ def test_unlock_counts_duplicate_committee_seats(spec, tree):
     store, nodes = tree
     original = lock(spec, nodes["A"])
     store.locks = {original}
-    vote(spec, store, nodes["B"], 0)
-    half = spec.HEAD_VOTE_COMMITTEE_SIZE // 2
-    store.head_vote_committees[10] = spec.HeadVoteCommittee(data=[0] * half + [1] * half)
+    vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2)
     spec.unlock(
         store,
         spec.Slot(10),
@@ -432,7 +433,7 @@ def test_equivocators_do_not_supply_fast_lock_support(spec, tree):
     store, nodes = tree
     vote(spec, store, nodes["A"], 0)
     vote(spec, store, nodes["B"], 0)
-    for validator in range(1, spec.HEAD_VOTE_COMMITTEE_SIZE // 2):
+    for validator in range(1, spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
         vote(spec, store, nodes["A"], validator)
     spec.update_confirmation(store, spec.Slot(10))
     # The clean votes exceed half of participation, but are below half of the committee.
@@ -531,7 +532,7 @@ def test_duty_unlock_uses_its_view(spec, tree, proposal):
     original = lock(spec, nodes["A"])
     store.locks = {original}
     late = at_slot(spec, 10) + spec.get_view_freeze_ms()
-    for validator in range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2):
+    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
         vote(spec, store, nodes["B"], validator, received=late)
     store.time_ms = at_slot(spec, 11)
     if proposal:
@@ -551,7 +552,7 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
     store.locks = {original}
     proposal = store.blocks[nodes["B1"].root]
     proposal.slot = spec.Slot(11)
-    indices = list(range(spec.HEAD_VOTE_COMMITTEE_SIZE // 2))
+    indices = list(range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2))
     propose_votes(spec, store, nodes, [(nodes["B"], indices, True)])
     store.time_ms = at_slot(spec, 11)
     if at_deadline:
@@ -584,12 +585,6 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
 def propose_votes(spec, store, nodes, votes):
     proposal = store.blocks[nodes["B1"].root]
     proposal.slot = spec.Slot(11)
-    state = store.block_states[nodes["B1"].root]
-    committee = spec.HeadVoteCommittee(data=list(range(spec.HEAD_VOTE_COMMITTEE_SIZE)))
-    epoch = spec.compute_epoch_at_slot(spec.Slot(10))
-    offset = int(epoch - spec.get_current_epoch(state) + 1) * int(spec.SLOTS_PER_EPOCH)
-    state.head_vote_committee_window[offset + 10 % spec.SLOTS_PER_EPOCH] = committee
-    store.head_vote_committees[10] = committee
     for node, voters, supported in votes:
         for voter in voters:
             proposal.body.head_vote_declarations.append(
@@ -604,8 +599,10 @@ def propose_votes(spec, store, nodes, votes):
 
 
 def merged_voters(spec, view):
-    votes, support = spec.compute_merged_view(([], []), view)
-    return {int(v.validator_index) for v in votes}, {int(v.validator_index) for v in support}
+    votes, support = view
+    return {int.from_bytes(v.pubkey, "little") for v in votes}, {
+        int.from_bytes(v.pubkey, "little") for v in support
+    }
 
 
 def test_proposer_support_needs_known_verified_head(spec, tree):
@@ -637,10 +634,11 @@ def test_declarations_keep_individual_support_bits(spec, tree):
     assert merged_voters(spec, view) == ({0, 1, 2, 3, 4, 5}, {0, 1, 2})
 
 
-def test_declaration_held_by_equivocation_does_not_enter_signed_pool(spec, tree):
+def test_equivocation_holds_declaration_without_creating_vote_weight(spec, tree):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11)
     propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
+    store.block_states[nodes["B"].root].validators.append(spec.Validator())
     # Another ready proposal cannot excuse an unheld declaration.
     store.blocks[nodes["A1"].root].slot = spec.Slot(11)
     store.head_vote_messages.clear()
@@ -648,12 +646,17 @@ def test_declaration_held_by_equivocation_does_not_enter_signed_pool(spec, tree)
     vote(spec, store, nodes["P"], 0)
     assert not spec.is_ac_vote_ready(store)
     assert spec.get_proposer_view(store, spec.Slot(11)) == (set(), set())
-    vote(spec, store, nodes["A"], 0)
+    freeze = at_slot(spec, 10) + spec.get_view_freeze_ms()
+    vote(spec, store, nodes["A"], 0, received=freeze)
     receipts = dict(store.head_vote_message_receipt_times)
     assert spec.is_ac_vote_ready(store)
-    cast, support = spec.get_proposer_view(store, spec.Slot(11))
-    assert cast == support
-    assert {v.supported_node for v in cast} == {nodes["B"]}
+    proposer_view = spec.get_proposer_view(store, spec.Slot(11))
+    assert {v.supported_node for v in proposer_view[0]} == {nodes["P"], nodes["A"]}
+    assert not proposer_view[1]
+    local_view = spec.get_local_view_from_p2p_messages(store, spec.Slot(10), freeze, freeze)
+    merged, support = spec.compute_merged_view(store, local_view, proposer_view)
+    assert spec.get_equivocating_pubkeys(merged) == {spec.XMSSPubkey()}
+    assert {v.supported_node for v in support} == {nodes["P"]}
     assert store.head_vote_message_receipt_times == receipts
     unknown = spec.Root(b"\x99" * 32)
     vote(spec, store, replace(nodes["B"], root=unknown), 1)
@@ -686,7 +689,7 @@ def test_support_index_addresses_filtered_messages(spec, tree):
     assert support == [0]
 
 
-def test_unheld_nonmember_declaration_does_not_delay_ready_sibling(spec, tree):
+def test_unheld_declaration_delays_ready_sibling(spec, tree):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11)
     propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
@@ -699,7 +702,7 @@ def test_unheld_nonmember_declaration_does_not_delay_ready_sibling(spec, tree):
     )
     sibling.body.head_vote_support_bits.append(True)
     store.block_states[nodes["A1"].root] = store.block_states[nodes["B1"].root].copy()
-    assert spec.is_ac_vote_ready(store)
+    assert not spec.is_ac_vote_ready(store)
     assert merged_voters(spec, spec.get_proposer_view(store, spec.Slot(11))) == ({0}, {0})
 
 
@@ -734,7 +737,7 @@ def test_head_vote_admission_and_gossip_cap(spec, tree, monkeypatch, vote_slot):
     for state in store.block_states.values():
         state.slot = spec.Slot(11)
         state.finalized_checkpoint = store.finalized_checkpoint.copy()
-        state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(1)))
+        add_elected_validator(spec, state)
     seen = SimpleNamespace(head_vote_validator_slots={})
     state = store.block_states[nodes["F"].root]
     messages = []
@@ -744,18 +747,12 @@ def test_head_vote_admission_and_gossip_cap(spec, tree, monkeypatch, vote_slot):
             beacon_block_root=nodes[name].root,
             payload_status=spec.PAYLOAD_STATUS_EMPTY,
         )
-        domain = spec.get_domain(
-            state, spec.DOMAIN_HEAD_VOTE, spec.compute_epoch_at_slot(data.slot)
-        )
         messages.append(
             spec.HeadVoteMessage(
                 validator_index=0,
                 data=data,
-                signature=spec.xmss.Sign(
-                    1,
-                    spec.compute_xmss_leaf_index(data.slot, spec.LEAF_OFFSET_HEAD_VOTE),
-                    spec.compute_signing_root(data, domain),
-                ),
+                signature=spec.get_head_vote_signature(state, data, 1),
+                proof=spec.VRFProof(data=get_vrf_proof(0)),
             )
         )
     invalid = messages[0].copy()
@@ -834,10 +831,10 @@ def test_responsive_vote_waits_for_support_payload(spec, tree, payload_available
 
 
 @pytest.mark.parametrize(
-    ("supported", "matching"),
-    [(False, False), (False, True), (True, False), (True, True), (True, None)],
+    ("supported", "held"),
+    [(False, False), (False, True), (True, False), (True, True)],
 )
-def test_vote_readiness_waits_only_for_supported_heads(spec, tree, supported, matching):
+def test_vote_readiness_waits_for_evidence_and_supported_heads(spec, tree, supported, held):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11)
     unknown = spec.ForkChoiceNode(
@@ -848,15 +845,10 @@ def test_vote_readiness_waits_only_for_supported_heads(spec, tree, supported, ma
     for state in store.block_states.values():
         state.proposer_lookahead[11 % spec.SLOTS_PER_EPOCH] = 1
     store.blocks[nodes["B1"].root].proposer_index = 1
-    if matching is None:
-        del store.head_vote_committees[10]
+    if not held:
         store.head_vote_messages.clear()
         store.head_vote_message_receipt_times.clear()
-    elif not matching:
-        store.head_vote_committees[10] = spec.HeadVoteCommittee(
-            data=[1] * spec.HEAD_VOTE_COMMITTEE_SIZE
-        )
-    ready = matching is False or (matching is True and not supported)
+    ready = held and not supported
     assert spec.is_ac_vote_ready(store) == ready
     assert (spec.get_ac_vote_head(store) is not None) == ready
 
@@ -891,11 +883,8 @@ def test_optimistic_threshold_cutoff_and_veto(
     store.time_ms = at_slot(spec, 11) + spec.get_support_cutoff_ms() + cutoff_offset
     if conflict:
         store.locks = {lock(spec, nodes["B"], slot=10, expiry=15)}
-    vote(spec, store, nodes["A"], 0, slot=11)
-    seats = 3 * spec.HEAD_VOTE_COMMITTEE_SIZE // 4 + seat_offset
-    store.head_vote_committees[11] = spec.HeadVoteCommittee(
-        data=[0] * seats + [1] * (spec.HEAD_VOTE_COMMITTEE_SIZE - seats)
-    )
+    seats = (3 * spec.HEAD_VOTE_QUORUM_DENOMINATOR + 3) // 4 + seat_offset
+    vote(spec, store, nodes["A"], 0, slot=11, weight=seats)
     spec.update_optimistic_confirmation(store)
     confirmed = store.latest_confirmed
     assert confirmed.root == nodes[expected].root
@@ -913,16 +902,13 @@ def test_optimistic_threshold_cutoff_and_veto(
 def test_optimistic_equivocator_counts_once_per_candidate(spec, tree):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11) + 1
-    vote(spec, store, nodes["A"], 0, slot=11)
-    vote(spec, store, nodes["B"], 0, slot=11)
-    vote(spec, store, nodes["A"], 1, slot=11)
-    quarter = spec.HEAD_VOTE_COMMITTEE_SIZE // 4
-    store.head_vote_committees[11] = spec.HeadVoteCommittee(
-        data=[0] * quarter + [1] * quarter + [2] * (2 * quarter)
-    )
+    quarter = spec.HEAD_VOTE_QUORUM_DENOMINATOR // 4
+    vote(spec, store, nodes["A"], 0, slot=11, weight=quarter)
+    vote(spec, store, nodes["B"], 0, slot=11, weight=2 * quarter - 1)
+    vote(spec, store, nodes["A"], 1, slot=11, weight=quarter)
     spec.update_optimistic_confirmation(store)
     assert store.latest_confirmed.root == nodes["F"].root
-    vote(spec, store, nodes["A"], 2, slot=11)
+    vote(spec, store, nodes["A"], 2, slot=11, weight=2 * quarter)
     spec.update_optimistic_confirmation(store)
     assert store.latest_confirmed == nodes["A"]
     assert lock(spec, nodes["A"], slot=11, expiry=13) in store.locks
@@ -932,7 +918,7 @@ def test_optimistic_equivocator_counts_once_per_candidate(spec, tree):
     assert spec.get_ac_frame(store) == nodes["A"]
 
 
-def test_queued_vote_with_changed_slot_committee_does_not_abort_tick(spec, tree):
+def test_queued_vote_preserves_validated_weight(spec, tree):
     store, nodes = tree
     message = spec.HeadVoteMessage(
         validator_index=0,
@@ -940,17 +926,13 @@ def test_queued_vote_with_changed_slot_committee_does_not_abort_tick(spec, tree)
             slot=12, beacon_block_root=nodes["A"].root, payload_status=spec.PAYLOAD_STATUS_EMPTY
         ),
     )
-    store.pending_head_votes = [
-        (message, spec.HeadVoteCommittee(data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE))
-    ]
-    store.head_vote_committees[12] = spec.HeadVoteCommittee(
-        data=[1] * spec.HEAD_VOTE_COMMITTEE_SIZE
-    )
+    admitted = spec.get_ac_vote(spec.XMSSPubkey(), message.data, spec.Uint64(3))
+    store.pending_head_votes = [(message, admitted)]
     spec.on_tick(store, at_slot(spec, 12) + spec.get_head_vote_due_ms())
     assert not store.pending_head_votes
-    assert 12 not in store.head_vote_messages
+    assert store.head_vote_messages[12] == [message]
     assert store.prepared_head_vote[0] == 12
-    assert list(store.head_vote_committees[12]) == [1] * spec.HEAD_VOTE_COMMITTEE_SIZE
+    assert store.validated_head_votes[spec.hash_tree_root(message)] == admitted
 
 
 def test_responsive_vote_accepts_other_in_frame_proposer(spec, tree):
@@ -979,9 +961,6 @@ def test_readiness_matches_proposer_support(spec, tree, status, in_frame):
     # The support is for an off-branch block in the vote's own slot.
     store.blocks[nodes["A1"].root].slot = spec.Slot(12)
     store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
-    # PQ has no inclusion lists; the payload has no PTC votes
-    store.payload_timeliness_vote[nodes["A"].root] = [None] * spec.PTC_SIZE
-    store.payload_data_availability_vote[nodes["A"].root] = [None] * spec.PTC_SIZE
     if not in_frame:
         store.finalized_checkpoint = spec.HeightCheckpoint(height=0, root=nodes["B"].root)
         store.justified_checkpoint = store.finalized_checkpoint.copy()
@@ -1005,62 +984,89 @@ def test_genesis_deadline_vote(spec, tree):
     assert spec.get_ac_vote_head(store) == expected
 
 
-def test_head_vote_gossip_pulls_up_stale_head(spec, tree, monkeypatch):
+def test_head_vote_gossip_uses_stale_voted_head(spec, tree):
     store, nodes = tree
-    monkeypatch.setattr(spec, "config", spec.config._replace(PQ_FORK_EPOCH=0))
-    eip8483 = import_module(f"eth_consensus_specs.eip8483.{context.DEFAULT_TEST_PRESET}")
-    pre = create_genesis_state(
-        eip8483, [eip8483.MIN_ACTIVATION_BALANCE] * 64, eip8483.MIN_ACTIVATION_BALANCE
-    )
-    state = upgrade_registered_to_pq(spec, pre)
+    state = spec.BeaconState(slot=spec.Slot(5))
+    add_elected_validator(spec, state)
     state.finalized_checkpoint = store.finalized_checkpoint.copy()
-    store.block_states = {root: state.copy() for root in store.blocks}
+    root = nodes["B1"].root
+    store.block_states[root] = state
     slot = spec.Slot(2 * spec.SLOTS_PER_EPOCH + 1)
     store.time_ms = at_slot(spec, slot)
-    pulled = spec.get_pulled_up_state(store, spec.get_head(store).root)
-    index = spec.get_head_vote_committee(pulled, slot)[0]
     data = spec.HeadVoteData(
-        slot=slot, beacon_block_root=nodes["B1"].root, payload_status=spec.PAYLOAD_STATUS_EMPTY
+        slot=slot, beacon_block_root=root, payload_status=spec.PAYLOAD_STATUS_EMPTY
     )
-    domain = spec.get_domain(pulled, spec.DOMAIN_HEAD_VOTE, spec.compute_epoch_at_slot(slot))
     message = spec.HeadVoteMessage(
-        validator_index=index,
+        validator_index=0,
         data=data,
-        signature=spec.xmss.Sign(
-            privkeys[index],
-            spec.compute_xmss_leaf_index(data.slot, spec.LEAF_OFFSET_HEAD_VOTE),
-            spec.compute_signing_root(data, domain),
-        ),
+        signature=spec.get_head_vote_signature(state, data, 1),
+        proof=spec.VRFProof(data=get_vrf_proof(0)),
     )
     seen = SimpleNamespace(head_vote_validator_slots={})
     spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
-    assert seen.head_vote_validator_slots[(slot, index)] == {spec.hash_tree_root(data)}
+    assert seen.head_vote_validator_slots[(slot, state.validators[0].pubkey)] == {
+        spec.hash_tree_root(data)
+    }
     spec.on_head_vote_message(store, message)
     assert store.head_vote_messages[slot] == [message]
-    assert all(block_state.slot == 0 for block_state in store.block_states.values())
+    assert store.block_states[root].slot == 5
 
 
-@pytest.mark.parametrize("matching", [False, True])
-def test_block_committee_mismatch_excludes_votes_not_block(spec, tree, monkeypatch, matching):
+def test_proposer_view_keeps_vote_weight_from_voted_head(spec, tree, monkeypatch):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11) + spec.get_head_vote_due_ms() + 1
     propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
     block = store.blocks.pop(nodes["B1"].root)
     store.block_states[block.parent_root] = store.block_states[nodes["B1"].root].copy()
-    if not matching:
-        store.head_vote_committees[10] = spec.HeadVoteCommittee(
-            data=[1] * spec.HEAD_VOTE_COMMITTEE_SIZE
-        )
-    expected_committee = store.head_vote_committees[10]
+    store.block_states[block.parent_root].era = spec.Era(1)
     # Isolate fork-choice admission from the already-validated state transition.
     monkeypatch.setattr(spec, "state_transition", lambda state, signed, validate_result: None)
     signed = spec.SignedBeaconBlock(message=block)
     spec.on_block(store, signed)
     assert spec.hash_tree_root(block) in store.blocks
-    assert store.head_vote_committees[10] == expected_committee
     votes, support = spec.get_proposer_view(store, spec.Slot(11))
-    assert len(votes) == int(matching)
+    assert [vote.weight for vote in votes] == [1]
     assert votes == support
+
+
+def test_cross_branch_head_vote_identity(spec, tree):
+    store, nodes = tree
+    slot = spec.Slot(10)
+    store.time_ms = at_slot(spec, slot)
+    seen = SimpleNamespace(head_vote_validator_slots={})
+    for name, index, key in [("A", 0, 1), ("B", 1, 1), ("A1", 2, 1), ("P", 0, 2)]:
+        node = nodes[name]
+        store.blocks[node.root].parent_root = nodes["F"].root
+        state = spec.BeaconState(slot=store.blocks[node.root].slot)
+        for prefix in range(index):
+            state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(10 + prefix)))
+        state.validators.append(
+            spec.Validator(pubkey=spec.xmss.SkToPk(key), vrf_root=get_vrf_root(key - 1))
+        )
+        state.head_vote_lotteries[0] = spec.HeadVoteLottery(
+            weights=spec.HeadVoteWeights(data=[0] * index + [1]), total_weight=1
+        )
+        store.block_states[node.root] = state
+        data = spec.HeadVoteData(
+            slot=slot, beacon_block_root=node.root, payload_status=node.payload_status
+        )
+        message = spec.HeadVoteMessage(
+            validator_index=index,
+            data=data,
+            proof=spec.VRFProof(data=get_vrf_proof(key - 1)),
+            signature=spec.get_head_vote_signature(state, data, key),
+        )
+        if name == "A1":
+            with pytest.raises(spec.GossipIgnore):
+                spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
+        else:
+            spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
+        spec.on_head_vote_message(store, message)
+    infinite = spec.INFINITE_TIME_MS
+    votes, _ = spec.get_combined_local_view(store, slot, infinite, infinite)
+    assert {vote.supported_node for vote in votes} == {nodes["P"], nodes["A"], nodes["B"]}
+    assert spec.get_equivocating_pubkeys(votes) == {spec.XMSSPubkey(spec.xmss.SkToPk(1))}
+    assert spec.sum_head_vote_weights(votes, slot) == 2 * spec.HEAD_VOTE_COMMITTEE_SIZE
 
 
 @pytest.mark.parametrize("status", [0, 1, 2])
@@ -1071,10 +1077,7 @@ def test_optimistic_confirmation_requires_resolved_support(spec, tree, status):
     store.payloads[nodes["A1"].root] = spec.ExecutionPayloadEnvelope()
     store.payload_receipt_times[nodes["A1"].root] = store.time_ms
     node = replace(nodes["A1"], payload_status=spec.PayloadStatus(status))
-    vote(spec, store, node, 0, slot=11)
-    store.head_vote_committees[11] = spec.HeadVoteCommittee(
-        data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
-    )
+    vote(spec, store, node, 0, slot=11, weight=spec.HEAD_VOTE_COMMITTEE_SIZE)
     spec.update_optimistic_confirmation(store)
     if status == spec.PAYLOAD_STATUS_PENDING:
         assert store.latest_confirmed == node
@@ -1090,18 +1093,14 @@ def test_receipt_enforces_vote_slot_payload_status(spec, tree, monkeypatch, bloc
     store.time_ms = at_slot(spec, 11) + 1
     store.blocks[nodes["A1"].root].slot = spec.Slot(block_slot)
     for state in store.block_states.values():
-        state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(1)))
+        add_elected_validator(spec, state)
     data = spec.HeadVoteData(slot=11, beacon_block_root=nodes["A1"].root, payload_status=status)
     state = store.block_states[nodes["F"].root]
-    domain = spec.get_domain(state, spec.DOMAIN_HEAD_VOTE, spec.compute_epoch_at_slot(data.slot))
     message = spec.HeadVoteMessage(
         validator_index=0,
         data=data,
-        signature=spec.xmss.Sign(
-            1,
-            spec.compute_xmss_leaf_index(data.slot, spec.LEAF_OFFSET_HEAD_VOTE),
-            spec.compute_signing_root(data, domain),
-        ),
+        signature=spec.get_head_vote_signature(state, data, 1),
+        proof=spec.VRFProof(data=get_vrf_proof(0)),
     )
     if (block_slot == 11) == (status == spec.PAYLOAD_STATUS_PENDING):
         spec.on_head_vote_message(store, message)
@@ -1129,23 +1128,20 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
     store.payloads[root] = spec.ExecutionPayloadEnvelope()
     store.payload_receipt_times[root] = store.time_ms
     for state in store.block_states.values():
-        state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(1)))
+        add_elected_validator(spec, state)
     data = spec.HeadVoteData(slot=11, beacon_block_root=root, payload_status=status)
     state = store.block_states[nodes["F"].root]
     message = spec.HeadVoteMessage(
         validator_index=0,
         data=data,
         signature=spec.get_head_vote_signature(state, data, 1),
+        proof=spec.VRFProof(data=get_vrf_proof(0)),
     )
     valid = (block_slot == 11) == (status == spec.PAYLOAD_STATUS_PENDING)
     if not block_first:
         block = store.blocks.pop(root)
-    if block_first and not valid:
-        with pytest.raises(AssertionError):
-            spec.on_head_vote_message(store, message)
-    else:
+        post_state = store.block_states.pop(root)
         spec.on_head_vote_message(store, message)
-    if not block_first:
         assert (
             spec.get_local_view_from_p2p_messages(
                 store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
@@ -1153,7 +1149,13 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
             == []
         )
         store.blocks[root] = block
+        store.block_states[root] = post_state
         store.block_receipt_times[root] = store.time_ms + 1
+    if valid:
+        spec.on_head_vote_message(store, message)
+    else:
+        with pytest.raises(AssertionError):
+            spec.on_head_vote_message(store, message)
     view = spec.get_local_view_from_p2p_messages(
         store, spec.Slot(11), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
     )
@@ -1170,10 +1172,14 @@ def test_optimistic_payload_tie_uses_lowest_status(spec, tree):
     store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
     store.payload_receipt_times[nodes["A"].root] = store.time_ms
     for status in (spec.PAYLOAD_STATUS_FULL, spec.PAYLOAD_STATUS_EMPTY):
-        vote(spec, store, replace(nodes["A"], payload_status=status), 0, slot=11)
-    store.head_vote_committees[11] = spec.HeadVoteCommittee(
-        data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
-    )
+        vote(
+            spec,
+            store,
+            replace(nodes["A"], payload_status=status),
+            0,
+            slot=11,
+            weight=spec.HEAD_VOTE_COMMITTEE_SIZE,
+        )
     spec.update_optimistic_confirmation(store)
     assert store.latest_confirmed == nodes["A"]
 
@@ -1189,10 +1195,7 @@ def test_optimistic_equal_rank_uses_lowest_root(spec, tree, root_byte):
     node_b = replace(nodes["B1"], root=root)
     store.blocks[root].slot = store.blocks[nodes["A1"].root].slot
     for node in (nodes["A1"], node_b):
-        vote(spec, store, node, 0, slot=11)
-    store.head_vote_committees[11] = spec.HeadVoteCommittee(
-        data=[0] * spec.HEAD_VOTE_COMMITTEE_SIZE
-    )
+        vote(spec, store, node, 0, slot=11, weight=spec.HEAD_VOTE_COMMITTEE_SIZE)
     spec.update_optimistic_confirmation(store)
     assert store.latest_confirmed == nodes["A1"]
 

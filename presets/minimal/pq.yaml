@@ -18,6 +18,8 @@ MAX_VALIDATORS_PER_AGGREGATE: 512
 # ---------------------------------------------------------------
 # [customized] 2**4 (= 16)
 HEAD_VOTE_COMMITTEE_SIZE: 16
+HEAD_VOTE_QUORUM_DENOMINATOR: 18
+HEAD_VOTE_PAYMENT_TARGET: 4
 
 # Rewards
 # ---------------------------------------------------------------

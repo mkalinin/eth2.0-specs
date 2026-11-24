@@ -17,10 +17,12 @@
   - [New `VoluntaryExitRequests`](#new-voluntaryexitrequests)
   - [New `AttestationCommittee`](#new-attestationcommittee)
   - [New `AttestationCommitteeBits`](#new-attestationcommitteebits)
-  - [New `HeadVoteCommittee`](#new-headvotecommittee)
-  - [New `HeadVoteCommitteeBits`](#new-headvotecommitteebits)
-  - [New `HeadVoteCommitteeIndices`](#new-headvotecommitteeindices)
-  - [New `HeadVoteCommitteeWindow`](#new-headvotecommitteewindow)
+  - [New `Era`](#new-era)
+  - [New `HeadVoteWeights`](#new-headvoteweights)
+  - [New `HeadVoteLotteries`](#new-headvotelotteries)
+  - [New `HeadVoteEraHistory`](#new-headvoteerahistory)
+  - [New `HeadVoteCredentials`](#new-headvotecredentials)
+  - [New `HeadVotePaymentVoters`](#new-headvotepaymentvoters)
   - [New `HeadVoteParticipation`](#new-headvoteparticipation)
   - [New `HeadVoteDeclarations`](#new-headvotedeclarations)
   - [New `HeadVoteSupportBits`](#new-headvotesupportbits)
@@ -78,6 +80,8 @@
   - [New containers](#new-containers)
     - [`HeightCheckpoint`](#heightcheckpoint)
     - [`PendingFinality`](#pendingfinality)
+    - [`HeadVoteLottery`](#headvotelottery)
+    - [`HeadVoteCredential`](#headvotecredential)
     - [`HeadVoteData`](#headvotedata)
     - [`HeadVote`](#headvote)
     - [`HeadVoteMessage`](#headvotemessage)
@@ -110,7 +114,7 @@
     - [New `compute_start_slot_at_round`](#new-compute_start_slot_at_round)
     - [New `compute_attestation_committee_slot`](#new-compute_attestation_committee_slot)
     - [Modified `compute_ptc`](#modified-compute_ptc)
-    - [New `compute_head_vote_committee`](#new-compute_head_vote_committee)
+    - [New `compute_head_vote_lanes`](#new-compute_head_vote_lanes)
   - [Predicates](#predicates)
     - [New `is_active_validator_preregistration`](#new-is_active_validator_preregistration)
     - [New `is_active_builder_preregistration`](#new-is_active_builder_preregistration)
@@ -148,7 +152,7 @@
     - [New `get_attestation_committee`](#new-get_attestation_committee)
     - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
-    - [New `get_head_vote_committee`](#new-get_head_vote_committee)
+    - [New `get_head_vote_weight`](#new-get_head_vote_weight)
     - [Modified `get_unslashed_participating_indices`](#modified-get_unslashed_participating_indices)
     - [New `get_validator_weight`](#new-get_validator_weight)
     - [New `get_total_weight`](#new-get_total_weight)
@@ -174,7 +178,8 @@
   - [Epoch processing](#epoch-processing)
     - [Modified `process_epoch`](#modified-process_epoch)
     - [Modified `process_builder_pending_payments`](#modified-process_builder_pending_payments)
-    - [New `process_head_vote_committee_window`](#new-process_head_vote_committee_window)
+    - [New `get_head_vote_weights`](#new-get_head_vote_weights)
+    - [New `process_head_vote_lottery_inputs`](#new-process_head_vote_lottery_inputs)
     - [New `process_preregistration_expiry`](#new-process_preregistration_expiry)
     - [Modified `apply_pending_deposit`](#modified-apply_pending_deposit)
     - [Modified `process_pending_deposits`](#modified-process_pending_deposits)
@@ -220,6 +225,8 @@
     - [Height events](#height-events)
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
+      - [New `process_era`](#new-process_era)
+      - [New `process_head_vote_lottery_rotation`](#new-process_head_vote_lottery_rotation)
       - [New `advance_height`](#new-advance_height)
 
 <!-- mdformat-toc end -->
@@ -253,13 +260,12 @@ justification it names is still pending on the chain that includes it. A quorum
 of finality pairs finalizes a pending justification, before the same block
 checks the target quorum.
 
-In every slot, a head vote committee of `HEAD_VOTE_COMMITTEE_SIZE` validators,
-sampled by effective balance, casts head votes. A block declares the previous
-slot's votes that its proposer holds, with one support bit per declaration, and
-fork choice merges these declarations against its own pool of signed votes. A
-block also carries signed head vote aggregates of the previous and current
-epochs, and the beacon state records which of their seats voted for the block of
-their slot, to weigh builder payments.
+AC draws fresh balance-proportional tickets every slot from two frozen balance
+descriptors. Each new era switches one lane to the newer descriptor. A block
+declares the previous slot's votes that its proposer holds, with one support bit
+per declaration. Fork choice merges those declarations with signed votes. For
+epoch settlement of pending builder payments, blocks also carry head vote
+aggregates with a credential for each distinct voter.
 
 Validators cast FG attestations in rounds of `SLOTS_PER_ROUND` slots. Each
 validator sits on the attestation committee given by its index modulo
@@ -479,59 +485,59 @@ class AttestationCommitteeBits(BitVector):
     LENGTH = ATTESTATION_COMMITTEES_PER_ROUND
 ```
 
-### New `HeadVoteCommittee`
+### New `Era`
 
 ```python
-class HeadVoteCommittee(Vector[ValidatorIndex]):
+class Era(Uint64):
     """
-    The head vote committee of a slot.
+    A chain counter that advances when a block of the current era is finalized.
     """
-
-    LENGTH = HEAD_VOTE_COMMITTEE_SIZE
 ```
 
-### New `HeadVoteCommitteeBits`
+### New `HeadVoteWeights`
+
+Each entry counts effective-balance increments. The maximum effective balance is
+2048 increments, which fits in `Uint16`.
 
 ```python
-class HeadVoteCommitteeBits(BitVector):
-    """
-    The participation bits of the head vote committee, one bit per member in
-    committee order.
-    """
-
-    LENGTH = HEAD_VOTE_COMMITTEE_SIZE
+class HeadVoteWeights(List[Uint16]):
+    LIMIT = VALIDATOR_REGISTRY_LIMIT
 ```
 
-### New `HeadVoteCommitteeIndices`
+### New `HeadVoteLotteries`
 
 ```python
-class HeadVoteCommitteeIndices(List[ValidatorIndex]):
-    """
-    The indices of the validators participating in a head vote.
-    """
-
-    LIMIT = HEAD_VOTE_COMMITTEE_SIZE
+class HeadVoteLotteries(Vector[HeadVoteLottery]):
+    LENGTH = 3 + (2 * SLOTS_PER_EPOCH + HEAD_VOTE_COMMITTEE_SIZE - 1) // HEAD_VOTE_COMMITTEE_SIZE
 ```
 
-### New `HeadVoteCommitteeWindow`
+### New `HeadVoteEraHistory`
 
 ```python
-class HeadVoteCommitteeWindow(Vector[HeadVoteCommittee]):
-    """
-    A rolling window of head vote committees for the previous, current, and
-    lookahead epochs.
-    """
+class HeadVoteEraHistory(Vector[Era]):
+    LENGTH = 2 * SLOTS_PER_EPOCH
+```
 
-    LENGTH = Uint64(MIN_SEED_LOOKAHEAD + 2) * Uint64(SLOTS_PER_EPOCH)
+### New `HeadVoteCredentials`
+
+```python
+class HeadVoteCredentials(List[HeadVoteCredential]):
+    LIMIT = 2 * HEAD_VOTE_COMMITTEE_SIZE
+```
+
+### New `HeadVotePaymentVoters`
+
+```python
+class HeadVotePaymentVoters(List[ValidatorIndex]):
+    LIMIT = HEAD_VOTE_PAYMENT_TARGET
 ```
 
 ### New `HeadVoteParticipation`
 
 ```python
-class HeadVoteParticipation(Vector[HeadVoteCommitteeBits]):
+class HeadVoteParticipation(Vector[HeadVotePaymentVoters]):
     """
-    The seats of each slot's head vote committee that voted for the block of
-    that slot, for the previous and current epochs.
+    Distinct voters credited per slot, for the previous and current epochs.
     """
 
     LENGTH = 2 * SLOTS_PER_EPOCH
@@ -729,9 +735,33 @@ the record rules out the newest, so the state keeps the older one too.
 
 ### Head votes
 
-| Name                       | Value                     |
-| -------------------------- | ------------------------- |
-| `HEAD_VOTE_COMMITTEE_SIZE` | `Uint64(2**10)` (= 1,024) |
+| Name                           | Value                  |
+| ------------------------------ | ---------------------- |
+| `HEAD_VOTE_COMMITTEE_SIZE`     | `Uint64(2**9)` (= 512) |
+| `HEAD_VOTE_QUORUM_DENOMINATOR` | `Uint64(576)`          |
+| `HEAD_VOTE_PAYMENT_TARGET`     | `Uint64(2**7)` (= 128) |
+
+The committee size is an expectation, not a bound. The absolute fork-choice
+thresholds use a fixed denominator with slack above that expectation. Epoch
+settlement of still-pending builder payments instead requires a fixed number of
+distinct voters, regardless of their ticket counts. Both thresholds are draft
+parameters: the denominator is not a bound on the number of tickets on one head
+or across competing heads. In particular, the thresholds do not imply
+deterministic quorum intersection.
+
+The active descriptors retain the stake in their snapshots until the era cursor
+replaces them. Through a finality stall, the ticket draws remain fresh each slot
+but their weights remain fixed. Validators that exit or are slashed keep the
+tickets their frozen weights earn. New validators become eligible when a later
+descriptor captures their stake.
+
+Eligibility uses the frozen weights, so nodes do not change a vote's weight
+based on locally seen slashing evidence or another branch's exit state. Budget
+the frozen weight of exited or slashed validators as potentially adversarial.
+Honest exits that stop voting make the absolute half and three-quarter
+thresholds harder to reach, but their absent votes do not enter the relative
+quorum. In particular, honest votes still need to outweigh participating
+adversarial votes.
 
 ### Rewards
 
@@ -886,7 +916,7 @@ keeps its name but moves to a new position.
 
 ```python
 class BeaconState(ProgressiveContainer):
-    ACTIVE_FIELDS = active_fields(width=63, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
+    ACTIVE_FIELDS = active_fields(width=69, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
 
     genesis_time: Uint64
     genesis_validators_root: Root
@@ -975,7 +1005,13 @@ class BeaconState(ProgressiveContainer):
     # [New in PQ:EIP8453]
     head_vote_participation: HeadVoteParticipation
     # [New in PQ:EIP8453]
-    head_vote_committee_window: HeadVoteCommitteeWindow
+    era: Era
+    era_start_slot: Slot
+    head_vote_era_history: HeadVoteEraHistory
+    head_vote_lotteries: HeadVoteLotteries
+    head_vote_sealed_lottery: HeadVoteLottery
+    head_vote_pending_weights: HeadVoteWeights
+    head_vote_latest_weights: HeadVoteWeights
 ```
 
 #### `Builder`
@@ -1202,6 +1238,23 @@ class PendingFinality(Container):
     participation: HeightParticipation
 ```
 
+#### `HeadVoteLottery`
+
+```python
+class HeadVoteLottery(Container):
+    weights: HeadVoteWeights
+    total_weight: Uint64
+    seed: Bytes32
+```
+
+#### `HeadVoteCredential`
+
+```python
+class HeadVoteCredential(Container):
+    validator_index: ValidatorIndex
+    proof: VRFProof
+```
+
 #### `HeadVoteData`
 
 ```python
@@ -1220,7 +1273,7 @@ the signatures of its voters.
 class HeadVote(ProgressiveContainer):
     ACTIVE_FIELDS = active_fields(width=2)
 
-    voter_indices: HeadVoteCommitteeIndices
+    credentials: HeadVoteCredentials
     data: HeadVoteData
 ```
 
@@ -1231,6 +1284,7 @@ class HeadVoteMessage(Container):
     validator_index: ValidatorIndex
     data: HeadVoteData
     signature: XMSSSignature
+    proof: VRFProof
 ```
 
 #### `ValidatorPreregistrationRequest`
@@ -1561,25 +1615,60 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
     )
 ```
 
-#### New `compute_head_vote_committee`
+#### New `compute_head_vote_lanes`
+
+For each balance increment the lottery issues `T // W` tickets plus a ticket
+with probability `(T % W) / W`, where `T` is the lane count and `W` is the
+frozen total weight. Each ticket independently chooses a lane uniformly, with
+replacement. A validator of weight `w` therefore has expected weight `w / W` in
+each lane. Repeated lane indices count as separate tickets. This is a reference
+sampler; it takes at most one Bernoulli trial per balance increment.
 
 ```python
-def compute_head_vote_committee(state: BeaconState, slot: Slot) -> HeadVoteCommittee:
-    """
-    Return the head vote committee for ``slot``, with possible duplicates.
-    """
-    epoch = compute_epoch_at_slot(slot)
-    seed = sha256(get_seed(state, epoch, DOMAIN_HEAD_VOTE_COMMITTEE) + uint_to_bytes(slot))
-    indices = get_active_validator_indices(state, epoch)
-    return HeadVoteCommittee(
-        data=compute_balance_weighted_selection(
-            state,
-            indices,
-            seed,
-            size=HEAD_VOTE_COMMITTEE_SIZE,
-            shuffle_indices=True,
-        )
+def compute_head_vote_lanes(
+    lottery: HeadVoteLottery,
+    batch: Uint64,
+    slot: Slot,
+    validator_index: ValidatorIndex,
+    output: Bytes32,
+) -> Sequence[Uint64]:
+    if validator_index >= len(lottery.weights) or lottery.total_weight == 0:
+        return []
+    weight = lottery.weights[validator_index]
+    total = int(lottery.total_weight)
+    base, remainder = divmod(int(HEAD_VOTE_COMMITTEE_SIZE), total)
+    seed = sha256(
+        DOMAIN_HEAD_VOTE_COMMITTEE
+        + lottery.seed
+        + uint_to_bytes(batch)
+        + uint_to_bytes(slot)
+        + uint_to_bytes(validator_index)
+        + output
     )
+    # Rejection sampling gives an exact uniform residue modulo the total weight.
+    limit = 2**256 - 2**256 % total
+    count = int(weight) * base
+    if remainder != 0:
+        for increment in range(weight):
+            attempt = Uint64(0)
+            while True:
+                draw = int.from_bytes(
+                    sha256(
+                        seed + b"\x00" + uint_to_bytes(Uint64(increment)) + uint_to_bytes(attempt)
+                    ),
+                    "little",
+                )
+                if draw < limit:
+                    count += int(draw % total < remainder)
+                    break
+                attempt += 1
+    return [
+        Uint64(
+            bytes_to_uint64(sha256(seed + b"\x01" + uint_to_bytes(Uint64(ticket)))[:8])
+            % HEAD_VOTE_COMMITTEE_SIZE
+        )
+        for ticket in range(count)
+    ]
 ```
 
 ### Predicates
@@ -1655,6 +1744,8 @@ def is_valid_vrf_proof(
     the tree under the VRF root of the validator at ``validator_index`` commits
     to.
     """
+    if slot >= 2**VRF_TREE_DEPTH:
+        return False
     value = compute_vrf_leaf(proof[0], Uint64(slot))
     for height in range(VRF_TREE_DEPTH):
         if slot // (2**height) % 2:
@@ -1858,7 +1949,7 @@ def is_valid_head_vote_declarations(body: BeaconBlockBody, slot: Slot) -> bool:
     declarations = body.head_vote_declarations
     if len(declarations) != len(body.head_vote_support_bits):
         return False
-    if len(declarations) > 2 * HEAD_VOTE_COMMITTEE_SIZE:
+    if len(declarations) > 4 * HEAD_VOTE_COMMITTEE_SIZE:
         return False
     if declarations and (slot == GENESIS_SLOT or compute_epoch_at_slot(slot - 1) < PQ_FORK_EPOCH):
         return False
@@ -1871,7 +1962,7 @@ def is_valid_head_vote_declarations(body: BeaconBlockBody, slot: Slot) -> bool:
             heads[declaration.validator_index] = set()
         previous = heads[declaration.validator_index]
         head = (declaration.beacon_block_root, status)
-        if head in previous or len(previous) == 2:
+        if head in previous:
             return False
         previous.add(head)
     return True
@@ -1929,16 +2020,11 @@ def is_head_vote_payload_status_valid(state: BeaconState, data: HeadVoteData) ->
 #### New `has_builder_payment_quorum`
 
 ```python
-def has_builder_payment_quorum(participation: HeadVoteCommitteeBits) -> bool:
+def has_builder_payment_quorum(participation: HeadVotePaymentVoters) -> bool:
     """
-    Check if the seats set in ``participation`` reach the payment quorum.
+    Check whether the distinct voters reach the payment target.
     """
-    seats = 0
-    for is_set in participation:
-        if is_set:
-            seats += 1
-    quorum = HEAD_VOTE_COMMITTEE_SIZE * BUILDER_PAYMENT_THRESHOLD_NUMERATOR
-    return seats * BUILDER_PAYMENT_THRESHOLD_DENOMINATOR >= quorum
+    return len(participation) == HEAD_VOTE_PAYMENT_TARGET
 ```
 
 #### New `has_quorum`
@@ -2075,7 +2161,9 @@ def get_head_vote_statement(state: BeaconState, vote: HeadVote) -> XMSSAggregate
     domain = get_domain(state, DOMAIN_HEAD_VOTE, compute_epoch_at_slot(data.slot))
     message = compute_signing_root(data, domain)
     leaf_index = compute_xmss_leaf_index(data.slot, LEAF_OFFSET_HEAD_VOTE)
-    pubkeys = [state.validators[index].pubkey for index in vote.voter_indices]
+    pubkeys = [
+        state.validators[credential.validator_index].pubkey for credential in vote.credentials
+    ]
     return XMSSAggregateStatement(pubkeys=pubkeys, leaf_index=leaf_index, message=message)
 ```
 
@@ -2247,22 +2335,49 @@ def get_aggregate_participants(
     return participants
 ```
 
-#### New `get_head_vote_committee`
+#### New `get_head_vote_weight`
+
+Fork choice uses the voting head's post-state and the full duty slot, including
+when the head is older than the duty. Block inclusion uses the including chain's
+era at the end of the duty slot, carried forward over empty slots. For era `e`,
+the cursor is `e % T` and the two descriptors have batch numbers `e // T` and
+`e // T + 1`. Relabelling a descriptor at rollover preserves its batch number,
+so its unchanged lanes retain their draws for the same slot.
+
+The draft uses the registered RANDAO tree. A proposer reveal also reveals the
+proposer's AC opening for that slot, and an AC vote reveals the voter's RANDAO
+leaf. The sampler hashes the authenticated leaf with the descriptor seed and
+batch, the duty slot, and the validator index.
 
 ```python
-def get_head_vote_committee(state: BeaconState, slot: Slot) -> HeadVoteCommittee:
-    """
-    Return the head vote committee for ``slot``.
-    """
-    epoch = compute_epoch_at_slot(slot)
-    assert epoch >= PQ_FORK_EPOCH
-    state_epoch = get_current_epoch(state)
-    if epoch < state_epoch:
-        assert epoch + 1 == state_epoch
-        return state.head_vote_committee_window[slot % SLOTS_PER_EPOCH]
-    assert epoch <= state_epoch + MIN_SEED_LOOKAHEAD
-    offset = Uint64(epoch - state_epoch + 1) * SLOTS_PER_EPOCH
-    return state.head_vote_committee_window[offset + slot % SLOTS_PER_EPOCH]
+def get_head_vote_weight(
+    state: BeaconState, slot: Slot, validator_index: ValidatorIndex, proof: VRFProof
+) -> Uint64:
+    if compute_epoch_at_slot(slot) < PQ_FORK_EPOCH:
+        return Uint64(0)
+    if validator_index >= len(state.validators):
+        return Uint64(0)
+    if not is_valid_vrf_proof(state, validator_index, slot, proof):
+        return Uint64(0)
+
+    era = state.era
+    if slot < state.slot:
+        assert state.slot - slot < 2 * SLOTS_PER_EPOCH
+        era = state.head_vote_era_history[slot % len(state.head_vote_era_history)]
+    batch = Uint64(era // HEAD_VOTE_COMMITTEE_SIZE)
+    cursor = era % HEAD_VOTE_COMMITTEE_SIZE
+    lotteries = state.head_vote_lotteries
+    old_lanes = compute_head_vote_lanes(
+        lotteries[batch % len(lotteries)], batch, slot, validator_index, proof[0]
+    )
+    weight = sum(lane >= cursor for lane in old_lanes)
+    if cursor > 0:
+        batch += 1
+        new_lanes = compute_head_vote_lanes(
+            lotteries[batch % len(lotteries)], batch, slot, validator_index, proof[0]
+        )
+        weight += sum(lane < cursor for lane in new_lanes)
+    return Uint64(weight)
 ```
 
 #### Modified `get_unslashed_participating_indices`
@@ -2543,6 +2658,8 @@ def process_slot(state: BeaconState) -> None:
     previous_block_root = hash_tree_root(state.latest_block_header)
     state.block_roots[slot_index] = previous_block_root
     # [New in PQ:EIP8453]
+    state.head_vote_era_history[state.slot % len(state.head_vote_era_history)] = state.era
+    # [New in PQ:EIP8453]
     # Cache target checkpoint root
     if state.target_checkpoint.root == Root():
         state.target_checkpoint.root = previous_block_root
@@ -2673,7 +2790,7 @@ def process_epoch(state: BeaconState) -> None:
     process_proposer_lookahead(state)
     process_ptc_window(state)
     # [New in PQ:EIP8453]
-    process_head_vote_committee_window(state)
+    process_head_vote_lottery_inputs(state)
     # [New in PQ:EIP8205]
     process_preregistration_expiry(state)
 ```
@@ -2702,23 +2819,42 @@ def process_builder_pending_payments(state: BeaconState) -> None:
 
     old_participation = state.head_vote_participation[SLOTS_PER_EPOCH:]
     state.head_vote_participation[:SLOTS_PER_EPOCH] = old_participation
-    new_participation = [HeadVoteCommitteeBits() for _ in range(SLOTS_PER_EPOCH)]
+    new_participation = [HeadVotePaymentVoters() for _ in range(SLOTS_PER_EPOCH)]
     state.head_vote_participation[SLOTS_PER_EPOCH:] = new_participation
 ```
 
-#### New `process_head_vote_committee_window`
+#### New `get_head_vote_weights`
 
 ```python
-def process_head_vote_committee_window(state: BeaconState) -> None:
-    """
-    Update the cached head vote committee window.
-    """
-    current_epoch = get_current_epoch(state)
-    committees = list(state.head_vote_committee_window[SLOTS_PER_EPOCH:])
-    start_slot = compute_start_slot_at_epoch(current_epoch + MIN_SEED_LOOKAHEAD + 1)
-    for slot in range(start_slot, start_slot + SLOTS_PER_EPOCH):
-        committees.append(compute_head_vote_committee(state, Slot(slot)))
-    state.head_vote_committee_window = HeadVoteCommitteeWindow(data=committees)
+def get_head_vote_weights(state: BeaconState, epoch: Epoch) -> HeadVoteWeights:
+    return HeadVoteWeights(
+        data=[
+            Uint16(v.effective_balance // EFFECTIVE_BALANCE_INCREMENT)
+            if is_active_validator(v, epoch) and not v.slashed
+            else Uint16(0)
+            for v in state.validators
+        ]
+    )
+```
+
+#### New `process_head_vote_lottery_inputs`
+
+At the boundary into epoch E, seal the balances captured at the start of E−2
+with the completed RANDAO mix of E−1. A zero-weight snapshot leaves the last
+positive sealed lottery in place. Registry indices are append-only and map to
+the same public keys on descendants of the snapshot.
+
+```python
+def process_head_vote_lottery_inputs(state: BeaconState) -> None:
+    epoch = get_current_epoch(state)
+    weights = state.head_vote_pending_weights
+    total = Uint64(sum(int(weight) for weight in weights))
+    if total > 0:
+        state.head_vote_sealed_lottery = HeadVoteLottery(
+            weights=weights, total_weight=total, seed=get_randao_mix(state, epoch)
+        )
+    state.head_vote_pending_weights = state.head_vote_latest_weights
+    state.head_vote_latest_weights = get_head_vote_weights(state, epoch + 1)
 ```
 
 #### New `process_preregistration_expiry`
@@ -2866,7 +3002,10 @@ def process_block(state: BeaconState, block: BeaconBlock) -> None:
     # [Modified in PQ]
     # Removed `process_sync_aggregate`
     # [New in PQ:EIP8453]
+    height = state.target_checkpoint.height
     process_height_events(state)
+    if state.target_checkpoint.height > height and process_era(state):
+        process_head_vote_lottery_rotation(state)
 ```
 
 #### Modified `process_randao`
@@ -3062,6 +3201,7 @@ def process_operations(
     # Removed the payload attestation limit
     # [New in PQ:EIP8453]
     assert len(body.head_votes) <= MAX_HEAD_VOTES
+    assert sum(len(vote.credentials) for vote in body.head_votes) <= 2 * HEAD_VOTE_COMMITTEE_SIZE
     # [New in PQ:EIP8453]
     assert is_valid_head_vote_declarations(body, state.slot)
 
@@ -3197,10 +3337,9 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
 
 ###### New `process_head_vote`
 
-*Note*: Head votes belong to the available chain. The beacon state records only
-which seats voted for the block of their slot, to weigh builder payments. A head
-vote carries no signature, so `process_stark` verifies the signatures of all
-head votes in the block instead.
+*Note*: The beacon state credits a distinct voter for the canonical block of the
+duty slot until the payment reaches its target. `process_stark` verifies the
+XMSS signatures; this operation checks the Merkle openings.
 
 ```python
 def process_head_vote(state: BeaconState, vote: HeadVote) -> None:
@@ -3209,21 +3348,25 @@ def process_head_vote(state: BeaconState, vote: HeadVote) -> None:
     assert compute_epoch_at_slot(data.slot) in (get_previous_epoch(state), get_current_epoch(state))
     assert is_head_vote_payload_status_valid(state, data)
 
-    committee = get_head_vote_committee(state, data.slot)
-    assert len(vote.voter_indices) > 0
-    assert list(vote.voter_indices) == sorted(set(vote.voter_indices))
-    for index in vote.voter_indices:
-        assert index in committee
+    indices = [credential.validator_index for credential in vote.credentials]
+    assert len(indices) > 0
+    assert indices == sorted(set(indices))
+    for credential in vote.credentials:
+        assert (
+            get_head_vote_weight(state, data.slot, credential.validator_index, credential.proof) > 0
+        )
 
-    # Record the seats that voted for the block of their slot
     if is_head_vote_same_slot(state, data):
         if compute_epoch_at_slot(data.slot) == get_current_epoch(state):
             participation_index = SLOTS_PER_EPOCH + data.slot % SLOTS_PER_EPOCH
         else:
             participation_index = data.slot % SLOTS_PER_EPOCH
-        for position, index in enumerate(committee):
-            if index in vote.voter_indices:
-                state.head_vote_participation[participation_index][position] = Boolean(True)
+        participation = state.head_vote_participation[participation_index]
+        for index in indices:
+            if has_builder_payment_quorum(participation):
+                break
+            if index not in participation:
+                participation.append(index)
 ```
 
 ##### Deposit requests
@@ -3879,6 +4022,36 @@ def process_height_events(state: BeaconState) -> None:
         and state.slot >= state.target_slot + TIMEOUT_DELAY_SLOTS
     ):
         advance_height(state)
+```
+
+##### New `process_era`
+
+Call at a height entry after recording finality. Since eras are monotone along
+the chain, a finalized block at or after the current era's start slot belongs to
+that era. The entry block starts the next era.
+
+```python
+def process_era(state: BeaconState) -> bool:
+    if state.finalized_checkpoint.height == 0 or state.finalized_slot < state.era_start_slot:
+        return False
+    state.era += 1
+    state.era_start_slot = state.slot
+    return True
+```
+
+##### New `process_head_vote_lottery_rotation`
+
+Pin the next descriptor in the era immediately before rollover. A descendant can
+enter the rollover era only by finalizing a block that already carries the
+pinned descriptor. The ring retains older descriptors for votes from the
+previous and current epochs, even when a rollover intervenes.
+
+```python
+def process_head_vote_lottery_rotation(state: BeaconState) -> None:
+    if state.era % HEAD_VOTE_COMMITTEE_SIZE == HEAD_VOTE_COMMITTEE_SIZE - 1:
+        batch = state.era // HEAD_VOTE_COMMITTEE_SIZE + 2
+        lotteries = state.head_vote_lotteries
+        lotteries[batch % len(lotteries)] = state.head_vote_sealed_lottery
 ```
 
 ##### New `advance_height`

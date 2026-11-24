@@ -67,7 +67,7 @@ def make_store(spec, head_root, head_state):
         locks=set(),
         head_vote_messages={},
         head_vote_message_receipt_times={},
-        head_vote_committees={},
+        validated_head_votes={},
     )
 
 

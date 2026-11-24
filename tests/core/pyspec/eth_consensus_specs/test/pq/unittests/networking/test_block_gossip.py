@@ -88,7 +88,7 @@ def test_proposer_signature_uses_parent_branch_registry(spec, monkeypatch, align
         locks=set(),
         head_vote_messages={},
         head_vote_message_receipt_times={},
-        head_vote_committees={},
+        validated_head_votes={},
     )
     head = spec.ForkChoiceNode(root=head_root, payload_status=spec.PAYLOAD_STATUS_EMPTY)
     monkeypatch.setattr(spec, "get_head", lambda _store: head)

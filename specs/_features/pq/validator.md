@@ -289,37 +289,15 @@ validator that is not active has no attestation duty.
 
 ### Head vote committees
 
-To determine the slots in which it casts head votes, a validator calls
-`get_head_vote_committee_assignments(state, epoch, validator_index)`.
-
-```python
-def get_head_vote_committee_assignments(
-    state: BeaconState, epoch: Epoch, validator_index: ValidatorIndex
-) -> Sequence[Slot]:
-    """
-    Return the slots of ``epoch`` in which the validator sits on the head vote
-    committee.
-    """
-    assert epoch <= get_current_epoch(state) + 1
-
-    slots: list[Slot] = []
-    start_slot = compute_start_slot_at_epoch(epoch)
-    for slot in range(start_slot, start_slot + SLOTS_PER_EPOCH):
-        if validator_index in get_head_vote_committee(state, Slot(slot)):
-            slots.append(Slot(slot))
-    return slots
-```
-
-A validator can sit on the head vote committee in several slots of an epoch, or
-in none. It casts one head vote per assigned slot, even if it holds several
-seats in that slot's committee.
+For each slot, a validator evaluates its Merkle opening against the voted head's
+post-state with `get_head_vote_weight`. It casts one head vote if it wins any
+tickets, regardless of the number it wins.
 
 ### Lookahead
 
-Head vote assignments are computed from the chain state using
-`get_head_vote_committee`. A validator should recompute them when the dependent
-chain state changes. A validator's attestation committee index is fixed by its
-validator index, and the chain state determines whether it is active.
+A validator can evaluate its own openings in advance for a given pair of
+descriptors and cursor. A validator's attestation committee index is fixed by
+its validator index, and the chain state determines whether it is active.
 
 *TODO*: Specify assignment lookahead and the dependent root in the PQ
 fork-choice and networking specifications.
@@ -463,6 +441,11 @@ that add uncredited seats for the canonical block of their slot, from the next
 slot through the last slot of the following epoch. Proposers may retain these
 aggregates beyond the lifetime of the fork-choice message pool. They need not
 match any declaration.
+
+Include at most `2 * HEAD_VOTE_COMMITTEE_SIZE` credentials across all aggregates
+in the block. Recheck each credential against the including chain's duty-slot
+era and lotteries. A vote with positive weight on its voted head can have zero
+weight for inclusion when the two chains have different duty-slot eras.
 
 ##### Attestations
 
@@ -691,6 +674,9 @@ its voting view.
 The validator creates `head_vote_message` as a
 [`HeadVoteMessage`](./beacon-chain.md#headvotemessage):
 
+- Set `head_vote_message.proof` to the validator's opening at `slot` in its
+  registered VRF tree. Check for positive weight against the voted head before
+  signing.
 - Set `head_vote_message.validator_index = validator_index`.
 - Set `head_vote_message.data = head_vote_data`.
 - Set `head_vote_message.signature` to
@@ -962,17 +948,23 @@ def get_aggregate_head_vote(state: BeaconState, messages: Sequence[HeadVoteMessa
     assert len(messages) > 0
     data = messages[0].data
     assert all(message.data == data for message in messages)
-    voter_indices = sorted({message.validator_index for message in messages})
-    assert len(voter_indices) == len(messages)
-
-    for validator_index in voter_indices:
-        assert validator_index in get_head_vote_committee(state, data.slot)
-
-    return HeadVote(voter_indices=HeadVoteCommitteeIndices(data=voter_indices), data=data)
+    ordered = sorted(messages, key=lambda message: message.validator_index)
+    assert len({message.validator_index for message in ordered}) == len(ordered)
+    for message in ordered:
+        assert get_head_vote_weight(state, data.slot, message.validator_index, message.proof) > 0
+    return HeadVote(
+        credentials=HeadVoteCredentials(
+            data=[
+                HeadVoteCredential(validator_index=message.validator_index, proof=message.proof)
+                for message in ordered
+            ]
+        ),
+        data=data,
+    )
 ```
 
 The aggregator proves the signatures of the messages it aggregates, in the order
-of the aggregate's `voter_indices`:
+of the aggregate's `credentials`:
 
 *TODO*: Revisit once the proof of head vote signatures is specified.
 

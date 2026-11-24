@@ -18,7 +18,7 @@ from eth_consensus_specs.test.helpers.block import (
 )
 from eth_consensus_specs.test.helpers.fork_choice import get_genesis_forkchoice_store_and_block
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
-from eth_consensus_specs.test.helpers.keys import privkeys
+from eth_consensus_specs.test.helpers.keys import get_vrf_proof, privkeys
 from eth_consensus_specs.test.helpers.pq.fork import register_xmss_pubkeys
 from eth_consensus_specs.test.helpers.state import state_transition_and_sign_block
 
@@ -260,7 +260,16 @@ def test_head_vote_with_heze_head(spec, chain):
     store, _, _, signed_a, _, fork_slot = chain
     a_root = signed_a.message.hash_tree_root()
     upgraded = spec.get_block_state(store, a_root)
-    validator = spec.get_head_vote_committee(upgraded, fork_slot)[0]
+    validator, opening = next(
+        (index, proof)
+        for index in range(len(upgraded.validators))
+        if spec.get_head_vote_weight(
+            upgraded,
+            fork_slot,
+            spec.ValidatorIndex(index),
+            proof := spec.VRFProof(data=get_vrf_proof(index)),
+        )
+    )
     data = spec.HeadVoteData(
         slot=fork_slot, beacon_block_root=a_root, payload_status=spec.PAYLOAD_STATUS_EMPTY
     )
@@ -268,9 +277,9 @@ def test_head_vote_with_heze_head(spec, chain):
         validator_index=validator,
         data=data,
         signature=spec.get_head_vote_signature(upgraded, data, privkeys[validator]),
+        proof=opening,
     )
-    # The pulled-up Heze head state is read, and the genesis Casper finalized
-    # root (zero in the state) stands for the genesis block
+    # The voted pre-fork head is read through its PQ upgrade.
     spec.validate_head_vote_gossip(make_seen(spec), store, message, store.time_ms, {})
 
 
