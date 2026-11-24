@@ -752,7 +752,7 @@ def test_head_vote_admission_and_gossip_cap(spec, tree, monkeypatch, vote_slot):
                 validator_index=0,
                 data=data,
                 signature=spec.get_head_vote_signature(state, data, 1),
-                proof=spec.VRFProof(data=get_vrf_proof(0)),
+                proof=spec.VRFProof(data=get_vrf_proof(0, data.slot)),
             )
         )
     invalid = messages[0].copy()
@@ -961,7 +961,7 @@ def test_head_vote_receipt_respects_current_finalized_subtree(spec, tree):
             validator_index=0,
             data=data,
             signature=spec.get_head_vote_signature(state, data, 1),
-            proof=spec.VRFProof(data=get_vrf_proof(0)),
+            proof=spec.VRFProof(data=get_vrf_proof(0, data.slot)),
         )
 
     admitted = message(spec.PAYLOAD_STATUS_EMPTY)
@@ -1021,7 +1021,7 @@ def test_head_vote_gossip_uses_stale_voted_head(spec, tree):
         validator_index=0,
         data=data,
         signature=spec.get_head_vote_signature(state, data, 1),
-        proof=spec.VRFProof(data=get_vrf_proof(0)),
+        proof=spec.VRFProof(data=get_vrf_proof(0, data.slot)),
     )
     seen = SimpleNamespace(head_vote_validator_slots={})
     spec.validate_head_vote_gossip(seen, store, message, store.time_ms, {})
@@ -1074,7 +1074,7 @@ def test_cross_branch_head_vote_identity(spec, tree):
         message = spec.HeadVoteMessage(
             validator_index=index,
             data=data,
-            proof=spec.VRFProof(data=get_vrf_proof(key - 1)),
+            proof=spec.VRFProof(data=get_vrf_proof(key - 1, data.slot)),
             signature=spec.get_head_vote_signature(state, data, key),
         )
         if name == "A1":
@@ -1121,7 +1121,7 @@ def test_receipt_enforces_vote_slot_payload_status(spec, tree, monkeypatch, bloc
         validator_index=0,
         data=data,
         signature=spec.get_head_vote_signature(state, data, 1),
-        proof=spec.VRFProof(data=get_vrf_proof(0)),
+        proof=spec.VRFProof(data=get_vrf_proof(0, data.slot)),
     )
     if (block_slot == 11) == (status == spec.PAYLOAD_STATUS_PENDING):
         spec.on_head_vote_message(store, message)
@@ -1156,7 +1156,7 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
         validator_index=0,
         data=data,
         signature=spec.get_head_vote_signature(state, data, 1),
-        proof=spec.VRFProof(data=get_vrf_proof(0)),
+        proof=spec.VRFProof(data=get_vrf_proof(0, data.slot)),
     )
     valid = (block_slot == 11) == (status == spec.PAYLOAD_STATUS_PENDING)
     if not block_first:

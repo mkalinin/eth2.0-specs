@@ -157,15 +157,12 @@ def run_fork_test(post_spec, pre_state):
     assert post_state.previous_target_checkpoint == post_spec.HeightCheckpoint()
     assert len(post_state.pending_finality) == 0
 
-    # The head vote committee window is empty for the previous epoch and filled
-    # for the current and lookahead epochs
-    start_slot = post_spec.compute_start_slot_at_epoch(post_spec.get_current_epoch(post_state))
-    for offset, committee in enumerate(post_state.head_vote_committee_window):
-        if offset < post_spec.SLOTS_PER_EPOCH:
-            assert committee == post_spec.HeadVoteCommittee()
-        else:
-            slot = post_spec.Slot(start_slot + offset - post_spec.SLOTS_PER_EPOCH)
-            assert committee == post_spec.compute_head_vote_committee(post_state, slot)
+    assert post_state.dynasty == 0
+    assert (
+        post_state.dynasty_start_slot == post_state.previous_dynasty_start_slot == post_state.slot
+    )
+    assert post_state.head_vote_lotteries[0] == post_state.head_vote_lotteries[1]
+    assert post_state.head_vote_lotteries[2] == post_spec.HeadVoteLottery.empty()
 
     # Casper FFG and the epoch participation are removed
     for field in ("justification_bits", "previous_epoch_participation"):

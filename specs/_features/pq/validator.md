@@ -677,7 +677,7 @@ its voting view.
 The validator creates `head_vote_message` as a
 [`HeadVoteMessage`](./beacon-chain.md#headvotemessage):
 
-- Set `head_vote_message.proof` to the validator's opening at `slot` in its
+- Set `head_vote_message.proof` to `compute_vrf_proof(vrf_seed, slot)` for the
   registered VRF tree. Check for positive weight against the voted head before
   signing.
 - Set `head_vote_message.validator_index = validator_index`.

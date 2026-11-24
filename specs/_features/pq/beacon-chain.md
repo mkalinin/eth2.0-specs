@@ -2340,8 +2340,9 @@ active, so its unchanged lanes retain their draws for the same slot.
 
 The draft uses the registered RANDAO tree. A proposer reveal also reveals the
 proposer's AC opening for that slot, and an AC vote reveals the voter's RANDAO
-leaf. The sampler hashes the authenticated leaf with the descriptor seed and
-batch, the duty slot, and the validator index.
+secret for that slot. The sampler uses the authenticated secret, whose leaf
+commitment is checked by `is_valid_vrf_proof`. The commitment itself can appear
+in another slot's proof and is not the lottery input.
 
 ```python
 def get_head_vote_weight(

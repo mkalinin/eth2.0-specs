@@ -54,7 +54,7 @@ def get_all_process_calls(spec):
         "process_proposer_lookahead",  # fulu
         "process_ptc_window",  # gloas
         "process_aggregation_committee_window",  # pq
-        "process_head_vote_committee_window",  # pq
+        "seal_head_vote_lottery",  # pq
         "process_preregistration_expiry",  # eip8205
     ]
 

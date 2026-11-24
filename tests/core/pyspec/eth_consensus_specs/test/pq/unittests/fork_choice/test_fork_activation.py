@@ -267,7 +267,7 @@ def test_head_vote_with_heze_head(spec, chain):
             upgraded,
             fork_slot,
             spec.ValidatorIndex(index),
-            proof := spec.VRFProof(data=get_vrf_proof(index)),
+            proof := spec.VRFProof(data=get_vrf_proof(index, fork_slot)),
         )
     )
     data = spec.HeadVoteData(

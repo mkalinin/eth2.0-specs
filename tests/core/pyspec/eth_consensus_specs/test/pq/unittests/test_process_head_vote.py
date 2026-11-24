@@ -36,7 +36,7 @@ def state(spec):
 def elected_messages(spec, state, data):
     for raw_index in range(len(state.validators)):
         index = spec.ValidatorIndex(raw_index)
-        proof = spec.VRFProof(data=get_vrf_proof(index))
+        proof = spec.VRFProof(data=get_vrf_proof(index, data.slot))
         if spec.get_head_vote_weight(state, data.slot, index, proof) > 0:
             yield spec.HeadVoteMessage(
                 validator_index=index,
@@ -66,17 +66,12 @@ def prove_head_votes(spec, state, votes):
         ]
         for vote in votes
     ]
-    return spec.AttestationProof(data=spec.stark.ProveAggregates(statements, signatures))
+    return spec.stark_prove_aggregates(statements, signatures)
 
 
 def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     slot = state.slot
-    proof = spec.VRFProof(data=get_vrf_proof(0))
-    # A different bottom sibling makes this opening slot-specific.
-    proof[1] = spec.Bytes32(b"\x95" * 32)
-    state.validators[0].vrf_root = spec.compute_merkle_branch_root(
-        proof[0], proof[1:], spec.VRF_TREE_DEPTH, slot
-    )
+    proof = spec.VRFProof(data=get_vrf_proof(0, slot))
     state.head_vote_lotteries[0] = spec.HeadVoteLottery(
         weights=spec.HeadVoteWeights(data=[1]), total_weight=1
     )
@@ -86,7 +81,11 @@ def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     state.validators[0].exit_epoch = spec.Epoch(0)
     assert spec.get_head_vote_weight(state, slot, index, proof) == spec.HEAD_VOTE_COMMITTEE_SIZE
     assert spec.get_head_vote_weight(state, slot + 1, index, proof) == 0
-    new_validator_proof = spec.VRFProof(data=get_vrf_proof(1))
+    next_proof = spec.VRFProof(data=get_vrf_proof(0, slot + 1))
+    assert spec.get_head_vote_weight(state, slot + 1, index, next_proof) == (
+        spec.HEAD_VOTE_COMMITTEE_SIZE
+    )
+    new_validator_proof = spec.VRFProof(data=get_vrf_proof(1, slot))
     assert spec.is_valid_vrf_proof(state, 1, slot, new_validator_proof)
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), new_validator_proof) == 0
 
@@ -105,7 +104,7 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     spec.advance_dynasty(state)
     assert state.dynasty == size - 1
     slot = state.slot
-    proof = spec.VRFProof(data=get_vrf_proof(1))
+    proof = spec.VRFProof(data=get_vrf_proof(1, slot))
     lanes = spec.compute_head_vote_lanes(
         second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
     )
@@ -133,7 +132,7 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     aggregate = spec.get_aggregate_head_vote(state, [message])
     spec.process_head_vote(state, aggregate)
 
-    new_proof = spec.VRFProof(data=get_vrf_proof(1))
+    new_proof = spec.VRFProof(data=get_vrf_proof(1, state.slot))
     assert spec.get_head_vote_weight(state, state.slot, spec.ValidatorIndex(1), new_proof) == size
     assert (
         spec.compute_head_vote_lanes(
@@ -247,7 +246,7 @@ def test_head_vote_status_uses_canonical_slot_evidence(spec, state, root_kind, s
             state,
             data.slot,
             spec.ValidatorIndex(index),
-            proof := spec.VRFProof(data=get_vrf_proof(index)),
+            proof := spec.VRFProof(data=get_vrf_proof(index, data.slot)),
         )
     )
     index, proof = opening
@@ -290,7 +289,7 @@ def test_genesis_vote_status_and_participation_require_canonical_root(
             state,
             data.slot,
             spec.ValidatorIndex(index),
-            proof := spec.VRFProof(data=get_vrf_proof(index)),
+            proof := spec.VRFProof(data=get_vrf_proof(index, data.slot)),
         )
     )
     index, proof = opening

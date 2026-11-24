@@ -79,9 +79,7 @@ def test_fork_builder_shares_validator_pubkey(spec, phases, state):
 @with_state
 @with_meta_tags(PQ_FORK_TEST_META_TAGS)
 def test_fork_one_registration(spec, phases, state):
-    # Only the last validator registers. The upgrade samples the head vote
-    # committees from the validators that stay active, so at least one must
-    # register.
+    # Only the last validator registers and stays active.
     last = len(state.validators) - 1
     register_xmss_pubkeys(spec, state, indices=[last])
     post_state = yield from run_fork_test(phases[PQ], state)
@@ -166,12 +164,11 @@ def test_fork_pending_top_up_deposit(spec, phases, state):
 @with_state
 @with_meta_tags(PQ_FORK_TEST_META_TAGS)
 def test_fork_pending_top_up_deposit_not_registered(spec, phases, state):
-    # Validator 0 does not register
-    register_xmss_pubkeys(spec, state, indices=range(1, len(state.validators)))
     state.pending_deposits.append(
         prepare_pending_deposit(spec, 0, spec.EFFECTIVE_BALANCE_INCREMENT, signed=True)
     )
-    yield from run_fork_test(phases[PQ], state)
+    post_state = yield from run_fork_test(phases[PQ], state)
+    assert post_state.head_vote_lotteries[0].total_weight == 0
 
 
 @with_phases(phases=[EIP8483], other_phases=[PQ])
@@ -282,6 +279,34 @@ def test_fork_next_epoch(spec, phases, state):
     register_xmss_pubkeys(spec, state)
     next_epoch(spec, state)
     yield from run_fork_test(phases[PQ], state)
+
+
+@with_phases(phases=[EIP8483], other_phases=[PQ])
+@spec_test
+@with_state
+@with_meta_tags(PQ_FORK_TEST_META_TAGS)
+def test_fork_with_no_active_validators_in_next_epoch(spec, phases, state):
+    epoch = spec.get_current_epoch(state)
+    register_xmss_pubkeys(spec, state, indices=[0, 1])
+    state.validators[0].exit_epoch = epoch + 1
+    state.validators[0].withdrawable_epoch = (
+        epoch + 1 + spec.config.MIN_VALIDATOR_WITHDRAWABILITY_DELAY
+    )
+    # Epoch processing computes proposer and PTC duties for epoch + 2.
+    state.validators[1].activation_epoch = epoch + 2
+
+    post_spec = phases[PQ]
+    post_state = yield from run_fork_test(post_spec, state)
+    lottery = post_state.head_vote_lotteries[0].copy()
+    assert (
+        lottery.total_weight
+        == state.validators[0].effective_balance // spec.EFFECTIVE_BALANCE_INCREMENT
+    )
+
+    next_epoch(post_spec, post_state)
+    assert post_spec.get_current_epoch(post_state) == epoch + 1
+    assert not post_spec.get_active_validator_indices(post_state, epoch + 1)
+    assert post_state.head_vote_lotteries[0] == lottery
 
 
 @with_phases(phases=[EIP8483], other_phases=[PQ])
