@@ -742,10 +742,9 @@ parameters: the denominator is not a bound on the number of tickets on one head
 or across competing heads. In particular, the thresholds do not imply
 deterministic quorum intersection.
 
-The block credential limit is twice the expected committee size to leave room
-for a slot's full set of votes for rewards, with slack for variation in the
-number of distinct voters. The builder payment target only limits payment
-accounting.
+The block credential limit is twice the expected committee size so a block can
+carry a slot's full set of votes, with slack for variation in the number of
+distinct voters. The builder payment target only limits payment accounting.
 
 Presets must set `HEAD_VOTE_COMMITTEE_SIZE` to a power of two so seat assignment
 by reduction modulo the committee size is uniform. It must also be at least

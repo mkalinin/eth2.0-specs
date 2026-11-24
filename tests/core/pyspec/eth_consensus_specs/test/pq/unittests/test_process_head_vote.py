@@ -123,6 +123,16 @@ def test_snapshot_sampler_rounds_at_fractional_boundary(spec, monkeypatch, extra
     assert all(seat_index < spec.HEAD_VOTE_COMMITTEE_SIZE for seat_index in seat_indices)
 
 
+def test_ac_snapshot_stall_at_bootstrap_leaves_third_entry_untouched(spec, state):
+    assert state.dynasty == 0
+    snapshots = state.ac_snapshots.copy()
+    mix = spec.Bytes32(b"\x37" * 32)
+    spec.process_slots(state, spec.compute_start_slot_at_epoch(spec.Epoch(1)))
+    state.randao_mixes[1] = mix
+    spec.process_slots(state, spec.compute_start_slot_at_epoch(spec.Epoch(2)))
+    assert state.ac_snapshots == snapshots
+
+
 def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
     # Disjoint snapshots expose selection on the wrong side of the snapshot boundary.
