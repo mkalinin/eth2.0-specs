@@ -438,10 +438,11 @@ to the declarations and support bits returned by
 Independently select up to `MAX_HEAD_VOTES` signed aggregates that satisfy
 [`process_head_vote`](./beacon-chain.md#new-process_head_vote). Include votes
 that add uncredited voters for the canonical block of their slot. The duty slot
-must be in the including chain's current or previous dynasty and in the current
-or previous epoch for payment accounting. Proposers may retain these aggregates
-beyond the lifetime of the fork-choice message pool. They need not match any
-declaration.
+must be in the entering state's current or previous dynasty and in the current
+or previous epoch for payment accounting. Under fast finality, the dynasty rule
+can end eligibility after just a few slots, well before the epoch window closes.
+Proposers may retain these aggregates beyond the lifetime of the fork-choice
+message pool. They need not match any declaration.
 
 Include at most `2 * HEAD_VOTE_COMMITTEE_SIZE` credentials across all aggregates
 in the block. Recheck each credential against the including chain's duty-slot

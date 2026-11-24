@@ -6,6 +6,8 @@ from itertools import islice
 import pytest
 
 from eth_consensus_specs.test import context
+from eth_consensus_specs.test.helpers.block import build_empty_block
+from eth_consensus_specs.test.helpers.constants import EIP8483, PREVIOUS_FORK_OF
 from eth_consensus_specs.test.helpers.genesis import create_genesis_state
 from eth_consensus_specs.test.helpers.keys import get_vrf_proof, privkeys
 from eth_consensus_specs.test.helpers.pq.fork import upgrade_registered_to_pq
@@ -90,7 +92,8 @@ def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), new_validator_proof) == 0
 
 
-def test_lottery_rollover_retains_only_previous_dynasty(spec, state):
+def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
+    monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
     # Disjoint snapshots make selection from the wrong side of the cursor visible.
     first = spec.HeadVoteLottery(weights=spec.HeadVoteWeights(data=[1, 0]), total_weight=1)
     second = spec.HeadVoteLottery(weights=spec.HeadVoteWeights(data=[0, 1]), total_weight=1)
@@ -145,25 +148,44 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state):
         != lanes
     )
 
-    # One more dynasty makes the duty too old even in the same epoch.
+    # The entry block can include the outgoing duty before it advances the
+    # dynasty and captures the replacement in the retired descriptor's entry.
     spec.process_slots(state, slot + 4)
-    state.finalized_slot = slot + 2
-    assert spec.process_dynasty(state)
+    quorum = spec.HeightParticipation(data=[spec.Boolean(value=True)] * len(state.validators))
+    checkpoint = spec.HeightCheckpoint(height=2, root=spec.Root(b"\x02" * 32))
+    state.justified_checkpoint = checkpoint
+    state.target_checkpoint = spec.HeightCheckpoint(height=3, root=spec.Root(b"\x03" * 32))
+    state.target_participation = quorum
+    state.pending_finality.append(
+        spec.PendingFinality(checkpoint=checkpoint, slot=slot + 2, participation=quorum)
+    )
+    block = build_empty_block(spec, state)
+    block.body.head_votes.append(aggregate)
+    block.body.proof = prove_head_votes(spec, state, block.body.head_votes)
+    spec.process_block(state, block)
     assert state.dynasty == size + 1
-    spec.capture_head_vote_lottery(state)
     assert len(state.head_vote_lotteries) == 3
     assert state.head_vote_lotteries[0].total_weight > first.total_weight
     assert state.head_vote_lotteries[1] == second
     assert state.head_vote_lotteries[2] == first
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == 0
+
+    # Its child rejects the same duty although the payment epoch is still open.
+    epoch = spec.get_current_epoch(state)
+    spec.process_slots(state, state.slot + 1)
+    child = build_empty_block(spec, state)
+    spec.process_block(state.copy(), child)
+    child.body.head_votes.append(aggregate)
+    child.body.proof = block.body.proof
     with pytest.raises(AssertionError):
-        spec.process_head_vote(state, aggregate)
+        spec.process_block(state.copy(), child)
 
     # Capture fixes the weights; only the next full epoch's mix seals them.
     captured = state.head_vote_lotteries[0].weights.copy()
     state.validators[0].slashed = True
-    epoch = spec.get_current_epoch(state)
-    spec.process_slots(state, spec.compute_start_slot_at_epoch(epoch + 1))
+    seed_epoch_start = spec.compute_start_slot_at_epoch(epoch + 1)
+    if state.slot < seed_epoch_start:
+        spec.process_slots(state, seed_epoch_start)
     assert state.head_vote_lotteries[0].seed == spec.Bytes32()
     mix = spec.Bytes32(b"\x37" * 32)
     state.randao_mixes[(epoch + 1) % spec.EPOCHS_PER_HISTORICAL_VECTOR] = mix

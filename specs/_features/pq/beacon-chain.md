@@ -741,6 +741,9 @@ parameters: the denominator is not a bound on the number of tickets on one head
 or across competing heads. In particular, the thresholds do not imply
 deterministic quorum intersection.
 
+Presets must set `HEAD_VOTE_COMMITTEE_SIZE >= SLOTS_PER_EPOCH + 2` so the third
+descriptor can seal before the penultimate dynasty of each cycle.
+
 The active descriptors retain the stake in their snapshots until the dynasty
 cursor replaces them. Through a finality stall, the ticket draws remain fresh
 each slot but their weights remain fixed. Validators that exit or are slashed
@@ -3326,7 +3329,9 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
 *Note*: The beacon state credits a distinct voter for the canonical block of the
 duty slot until the payment reaches its target. The epoch window matches the two
 epochs of payment participation kept in state. A vote must also belong to the
-current or previous dynasty on the including chain. `process_stark` verifies the
+current or previous dynasty of the including block's entering state. Operations
+run before dynasty advancement, so an entry block may include a duty from the
+dynasty it makes ineligible for subsequent blocks. `process_stark` verifies the
 XMSS signatures; this operation checks the Merkle openings.
 
 ```python
