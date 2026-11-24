@@ -84,7 +84,6 @@ def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     assert spec.get_head_vote_weight(state, slot, index, proof) == spec.HEAD_VOTE_COMMITTEE_SIZE
     state.validators[0].slashed = True
     state.validators[0].exit_epoch = spec.Epoch(0)
-    assert not spec.process_dynasty(state)
     assert spec.get_head_vote_weight(state, slot, index, proof) == spec.HEAD_VOTE_COMMITTEE_SIZE
     assert spec.get_head_vote_weight(state, slot + 1, index, proof) == 0
     new_validator_proof = spec.VRFProof(data=get_vrf_proof(1))
@@ -103,10 +102,7 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     size = spec.HEAD_VOTE_COMMITTEE_SIZE
     state.dynasty = spec.Dynasty(size - 2)
     state.dynasty_start_slot = spec.Slot(1)
-    state.finalized_checkpoint.height = spec.Height(1)
-    assert not spec.process_dynasty(state)
-    state.finalized_slot = spec.Slot(1)
-    assert spec.process_dynasty(state)
+    spec.advance_dynasty(state)
     assert state.dynasty == size - 1
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(1))
@@ -118,9 +114,7 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
 
     spec.process_slots(state, slot + 2)
-    assert not spec.process_dynasty(state)
-    state.finalized_slot = slot
-    assert spec.process_dynasty(state)
+    spec.advance_dynasty(state)
     assert state.dynasty == size
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
 
@@ -162,6 +156,15 @@ def test_lottery_rollover_retains_only_previous_dynasty(spec, state, monkeypatch
     block = build_empty_block(spec, state)
     block.body.head_votes.append(aggregate)
     block.body.proof = prove_head_votes(spec, state, block.body.head_votes)
+
+    # A height entry finalizing an older dynasty leaves the cursor unchanged.
+    older_finality = state.copy()
+    older_finality.pending_finality[0].slot = slot + 1
+    spec.process_block(older_finality, block)
+    assert older_finality.target_checkpoint.height == 4
+    assert older_finality.dynasty == size
+    assert older_finality.head_vote_lotteries[0] == first
+
     spec.process_block(state, block)
     assert state.dynasty == size + 1
     assert len(state.head_vote_lotteries) == 3

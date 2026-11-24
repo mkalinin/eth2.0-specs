@@ -224,7 +224,7 @@
     - [Height events](#height-events)
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
-      - [New `process_dynasty`](#new-process_dynasty)
+      - [New `advance_dynasty`](#new-advance_dynasty)
       - [New `capture_head_vote_lottery`](#new-capture_head_vote_lottery)
       - [New `advance_height`](#new-advance_height)
 
@@ -2992,9 +2992,16 @@ def process_block(state: BeaconState, block: BeaconBlock) -> None:
     # [New in PQ:EIP8453]
     height = state.target_checkpoint.height
     process_height_events(state)
-    if state.target_checkpoint.height > height and process_dynasty(state):
-        if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
-            capture_head_vote_lottery(state)
+    if state.target_checkpoint.height > height:
+        # Dynasties are monotone along the chain, so finalizing a block at or
+        # after the current dynasty's start slot finalizes a block of that dynasty.
+        if (
+            state.finalized_checkpoint.height > 0
+            and state.finalized_slot >= state.dynasty_start_slot
+        ):
+            advance_dynasty(state)
+            if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
+                capture_head_vote_lottery(state)
 ```
 
 #### Modified `process_randao`
@@ -4018,20 +4025,13 @@ def process_height_events(state: BeaconState) -> None:
         advance_height(state)
 ```
 
-##### New `process_dynasty`
-
-Call at a height entry after recording finality. Since dynasties are monotone
-along the chain, a finalized block at or after the current dynasty's start slot
-belongs to that dynasty. The entry block starts the next dynasty.
+##### New `advance_dynasty`
 
 ```python
-def process_dynasty(state: BeaconState) -> bool:
-    if state.finalized_checkpoint.height == 0 or state.finalized_slot < state.dynasty_start_slot:
-        return False
+def advance_dynasty(state: BeaconState) -> None:
     state.dynasty += 1
     state.previous_dynasty_start_slot = state.dynasty_start_slot
     state.dynasty_start_slot = state.slot
-    return True
 ```
 
 ##### New `capture_head_vote_lottery`
