@@ -315,9 +315,10 @@ one use the eligible weights at the fork and the completed pre-fork RANDAO mix
 (the genesis mix at a genesis fork). Their snapshot numbers distinguish their
 draws. The third entry captures its first snapshot when dynasty one begins.
 
-The AC bootstrap assumes positive eligible weight from registered validators at
-the fork. It does not sample future epochs. Proposer and payload timeliness
-committee lookahead retain their own requirements during epoch processing.
+The AC bootstrap captures eligible weight from registered validators at the
+fork. A historical head upgraded independently can have no eligible weight and
+therefore supplies no AC seats. Proposer and payload timeliness committee
+lookahead retain their own requirements during epoch processing.
 
 ```python
 def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:

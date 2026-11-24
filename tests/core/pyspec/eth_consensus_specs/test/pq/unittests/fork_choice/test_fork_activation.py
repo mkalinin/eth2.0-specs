@@ -134,6 +134,25 @@ def test_store_conversion_anchors_at_casper_finality(spec, chain):
     assert upgraded.finalized_checkpoint.height == anchor.height
 
 
+def test_historical_head_with_no_eligible_ac_weight(spec, eip8483):
+    state = create_genesis_state(
+        eip8483, [eip8483.MAX_EFFECTIVE_BALANCE] * 64, eip8483.MAX_EFFECTIVE_BALANCE
+    )
+    register_xmss_pubkeys(eip8483, state, indices=[0])
+    state.validators[0].exit_epoch = eip8483.Epoch(FORK_EPOCH)
+    pre_store, anchor = get_genesis_forkchoice_store_and_block(eip8483, state)
+    slot = spec.compute_start_slot_at_epoch(spec.Epoch(FORK_EPOCH))
+    eip8483.on_tick(pre_store, slot_time(eip8483, slot))
+    store = spec.upgrade_store_to_pq(pre_store)
+    upgraded = spec.get_block_state(store, anchor.hash_tree_root())
+
+    index = spec.ValidatorIndex(0)
+    proof = spec.VRFProof(data=get_vrf_proof(index, slot))
+    assert not any(upgraded.ac_snapshots[0].weights)
+    assert spec.is_valid_vrf_proof(upgraded, index, slot, proof)
+    assert spec.get_head_vote_weight(upgraded, slot, index, proof) == 0
+
+
 def test_first_post_fork_block_import(spec, chain):
     store, _, _, signed_a, _, fork_slot = chain
     a_root = signed_a.message.hash_tree_root()

@@ -1623,9 +1623,9 @@ receives the integer part plus one ticket with probability rounded up from the
 fractional part to the nearest multiple of `2**-64`. A single comparison with
 128-bit products implements this rounding, with bias less than `2**-64`. Each
 ticket independently chooses a seat index uniformly, with replacement. Repeated
-seat indices count as separate tickets. Each snapshot used for selection is
-assumed to have positive eligible weight. Clients may cache the total weight for
-each snapshot.
+seat indices count as separate tickets. A validator with zero weight receives no
+seats, including when an upgraded historical head has no eligible validators.
+Clients may cache the total weight for each snapshot.
 
 ```python
 def compute_ac_seat_indices(
@@ -1638,6 +1638,8 @@ def compute_ac_seat_indices(
     if validator_index >= len(snapshot.weights):
         return []
     weight = snapshot.weights[validator_index]
+    if weight == 0:
+        return []
     total = sum(int(weight) for weight in snapshot.weights)
     count, remainder = divmod(int(weight) * int(HEAD_VOTE_COMMITTEE_SIZE), total)
     seed = sha256(
