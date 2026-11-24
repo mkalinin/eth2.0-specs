@@ -66,10 +66,6 @@ def run_fork_test(post_spec, pre_state):
         "balances",
         "randao_mixes",
         "slashings",
-        "justification_bits",
-        "previous_justified_checkpoint",
-        "current_justified_checkpoint",
-        "finalized_checkpoint",
         "latest_block_hash",
         "next_withdrawal_index",
         "next_withdrawal_validator_index",
@@ -150,17 +146,30 @@ def run_fork_test(post_spec, pre_state):
         else:
             assert post_deposit.pubkey == pre_deposit.pubkey
 
-    # The aggregator window is empty for the previous epoch and filled for the
-    # current and lookahead epochs
+    # The finality gadget starts at height 0 from the last finalized Casper FFG
+    # checkpoint, and the latest block before the upgrade is the target of height 1
+    finalized = post_spec.HeightCheckpoint(height=0, root=pre_state.finalized_checkpoint.root)
+    assert post_state.justified_checkpoint == finalized
+    assert post_state.finalized_checkpoint == finalized
+    assert post_state.target_checkpoint == post_spec.HeightCheckpoint(
+        height=1, root=pre_state.latest_block_header.hash_tree_root()
+    )
+    assert post_state.previous_target_checkpoint == post_spec.HeightCheckpoint()
+    assert len(post_state.pending_finality) == 0
+
+    # The head vote committee window is empty for the previous epoch and filled
+    # for the current and lookahead epochs
     start_slot = post_spec.compute_start_slot_at_epoch(post_spec.get_current_epoch(post_state))
-    for offset, aggregation_committees in enumerate(post_state.aggregation_committee_window):
+    for offset, committee in enumerate(post_state.head_vote_committee_window):
         if offset < post_spec.SLOTS_PER_EPOCH:
-            assert len(aggregation_committees) == 0
+            assert committee == post_spec.HeadVoteCommittee()
         else:
             slot = post_spec.Slot(start_slot + offset - post_spec.SLOTS_PER_EPOCH)
-            assert aggregation_committees == post_spec.compute_aggregation_committees(
-                post_state, slot
-            )
+            assert committee == post_spec.compute_head_vote_committee(post_state, slot)
+
+    # Casper FFG and the epoch participation are removed
+    for field in ("justification_bits", "previous_epoch_participation"):
+        assert not hasattr(post_state, field)
 
     # Sync committees are removed
     assert not hasattr(post_state, "current_sync_committee")

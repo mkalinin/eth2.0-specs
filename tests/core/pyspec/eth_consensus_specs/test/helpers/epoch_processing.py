@@ -1,10 +1,25 @@
 from eth_consensus_specs.test.helpers.forks import (
     is_post_altair,
     is_post_capella,
+    is_post_pq,
 )
+
+# Epoch processing that PQ removes, since the finality gadget settles
+# participation and inactivity once per round instead
+PQ_REMOVED_PROCESS_CALLS = {
+    "process_inactivity_updates",
+    "process_participation_flag_updates",
+}
 
 
 def get_process_calls(spec):
+    calls = get_all_process_calls(spec)
+    if is_post_pq(spec):
+        calls = [name for name in calls if name not in PQ_REMOVED_PROCESS_CALLS]
+    return calls
+
+
+def get_all_process_calls(spec):
     # unrecognized processing functions will be ignored.
     # This sums up the aggregate of processing functions of all phases.
     # Note: make sure to explicitly remove/override a processing function in later phases,
@@ -39,6 +54,7 @@ def get_process_calls(spec):
         "process_proposer_lookahead",  # fulu
         "process_ptc_window",  # gloas
         "process_aggregation_committee_window",  # pq
+        "process_head_vote_committee_window",  # pq
         "process_preregistration_expiry",  # eip8205
     ]
 

@@ -78,12 +78,18 @@ def test_fork_builder_shares_validator_pubkey(spec, phases, state):
 @spec_test
 @with_state
 @with_meta_tags(PQ_FORK_TEST_META_TAGS)
-def test_fork_no_registrations(spec, phases, state):
+def test_fork_one_registration(spec, phases, state):
+    # Only the last validator registers. The upgrade samples the head vote
+    # committees from the validators that stay active, so at least one must
+    # register.
+    last = len(state.validators) - 1
+    register_xmss_pubkeys(spec, state, indices=[last])
     post_state = yield from run_fork_test(phases[PQ], state)
 
     post_spec = phases[PQ]
     epoch = post_spec.get_current_epoch(post_state)
-    for validator in post_state.validators:
+    assert post_spec.is_active_validator(post_state.validators[last], epoch)
+    for validator in post_state.validators[:last]:
         assert validator.exit_epoch == epoch
         assert validator.withdrawable_epoch == (
             epoch + post_spec.config.UNREGISTERED_VALIDATOR_WITHDRAWABILITY_DELAY
@@ -160,6 +166,8 @@ def test_fork_pending_top_up_deposit(spec, phases, state):
 @with_state
 @with_meta_tags(PQ_FORK_TEST_META_TAGS)
 def test_fork_pending_top_up_deposit_not_registered(spec, phases, state):
+    # Validator 0 does not register
+    register_xmss_pubkeys(spec, state, indices=range(1, len(state.validators)))
     state.pending_deposits.append(
         prepare_pending_deposit(spec, 0, spec.EFFECTIVE_BALANCE_INCREMENT, signed=True)
     )

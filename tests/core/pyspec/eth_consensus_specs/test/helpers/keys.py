@@ -26,8 +26,9 @@ pubkey_to_privkey.update(zip(xmss_pubkeys, privkeys, strict=True))
 # Depth of the VRF trees whose roots validators register
 VRF_TREE_DEPTH = 31
 # A full VRF tree takes billions of hashes, so the placeholder VRF trees only
-# commit to secrets for the first 2**VRF_SUBTREE_DEPTH slots
-VRF_SUBTREE_DEPTH = 12
+# commit to secrets for the first 2**VRF_SUBTREE_DEPTH slots, enough for mainnet
+# tests that start after `SHARD_COMMITTEE_PERIOD` epochs
+VRF_SUBTREE_DEPTH = 14
 
 
 def get_vrf_secret(slot):

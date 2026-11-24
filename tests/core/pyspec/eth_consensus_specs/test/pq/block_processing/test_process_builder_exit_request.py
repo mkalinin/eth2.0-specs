@@ -1,9 +1,19 @@
 from eth_consensus_specs.test.context import spec_state_test, with_phases
 from eth_consensus_specs.test.gloas.block_processing.test_process_builder_exit_request import (
-    advance_past_finalization,
     run_builder_exit_request_processing,
 )
 from eth_consensus_specs.test.helpers.constants import PQ
+from eth_consensus_specs.test.helpers.state import next_slots
+
+
+def advance_past_finalization(spec, state):
+    """
+    Advance slots and finalize the slot after the genesis epoch, so that
+    genesis-epoch builders become active.
+    """
+    epoch = spec.get_current_epoch(state)
+    next_slots(spec, state, spec.SLOTS_PER_EPOCH * 3)
+    state.finalized_slot = spec.compute_start_slot_at_epoch(epoch + 1)
 
 
 def prepare_builder_exit_request(spec, state, builder_index, prefix=None):

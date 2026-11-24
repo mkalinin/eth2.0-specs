@@ -164,7 +164,13 @@ def create_genesis_state(spec, validator_balances, activation_threshold, builder
         if validator.effective_balance >= activation_threshold:
             validator.activation_eligibility_epoch = spec.GENESIS_EPOCH
             validator.activation_epoch = spec.GENESIS_EPOCH
-        if is_post_altair(spec):
+        if is_post_pq(spec):
+            # The finality gadget replaces the epoch participation
+            state.round_participation.append(spec.ParticipationFlags(0b0000_0000))
+            state.target_participation.append(spec.Boolean(value=False))
+            state.progress_participation.append(spec.Boolean(value=False))
+            state.inactivity_scores.append(spec.Uint64(0))
+        elif is_post_altair(spec):
             state.previous_epoch_participation.append(spec.ParticipationFlags(0b0000_0000))
             state.current_epoch_participation.append(spec.ParticipationFlags(0b0000_0000))
             state.inactivity_scores.append(spec.Uint64(0))
@@ -239,7 +245,10 @@ def create_genesis_state(spec, validator_balances, activation_threshold, builder
         state.ptc_window = initialize_ptc_window(spec, state)
 
     if is_post_pq(spec):
-        state.aggregation_committee_window = spec.initialize_aggregation_committee_window(state)
+        # The genesis block is the target of height 1, filled in by the first
+        # ``process_slot``, and the zero root stands for it at height 0
+        state.target_checkpoint = spec.HeightCheckpoint(height=1, root=spec.Root())
+        state.target_slot = spec.GENESIS_SLOT
 
     if is_post_eip8148(spec):
         state.validator_sweep_thresholds = spec.SweepThresholds(
@@ -254,6 +263,9 @@ def create_genesis_state(spec, validator_balances, activation_threshold, builder
     if is_post_fulu(spec):
         # Initialize proposer lookahead list
         state.proposer_lookahead = initialize_proposer_lookahead(spec, state)
+
+    if is_post_pq(spec):
+        state.head_vote_committee_window = spec.initialize_head_vote_committee_window(state)
 
     return state
 
