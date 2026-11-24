@@ -17,10 +17,9 @@
   - [New `VoluntaryExitRequests`](#new-voluntaryexitrequests)
   - [New `AttestationCommittee`](#new-attestationcommittee)
   - [New `AttestationCommitteeBits`](#new-attestationcommitteebits)
-  - [New `Era`](#new-era)
+  - [New `Dynasty`](#new-dynasty)
   - [New `HeadVoteWeights`](#new-headvoteweights)
   - [New `HeadVoteLotteries`](#new-headvotelotteries)
-  - [New `HeadVoteEraHistory`](#new-headvoteerahistory)
   - [New `HeadVoteCredentials`](#new-headvotecredentials)
   - [New `HeadVotePaymentVoters`](#new-headvotepaymentvoters)
   - [New `HeadVoteParticipation`](#new-headvoteparticipation)
@@ -179,7 +178,7 @@
     - [Modified `process_epoch`](#modified-process_epoch)
     - [Modified `process_builder_pending_payments`](#modified-process_builder_pending_payments)
     - [New `get_head_vote_weights`](#new-get_head_vote_weights)
-    - [New `process_head_vote_lottery_inputs`](#new-process_head_vote_lottery_inputs)
+    - [New `seal_head_vote_lottery`](#new-seal_head_vote_lottery)
     - [New `process_preregistration_expiry`](#new-process_preregistration_expiry)
     - [Modified `apply_pending_deposit`](#modified-apply_pending_deposit)
     - [Modified `process_pending_deposits`](#modified-process_pending_deposits)
@@ -225,8 +224,8 @@
     - [Height events](#height-events)
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
-      - [New `process_era`](#new-process_era)
-      - [New `process_head_vote_lottery_rotation`](#new-process_head_vote_lottery_rotation)
+      - [New `process_dynasty`](#new-process_dynasty)
+      - [New `capture_head_vote_lottery`](#new-capture_head_vote_lottery)
       - [New `advance_height`](#new-advance_height)
 
 <!-- mdformat-toc end -->
@@ -261,7 +260,7 @@ of finality pairs finalizes a pending justification, before the same block
 checks the target quorum.
 
 AC draws fresh balance-proportional tickets every slot from two frozen balance
-descriptors. Each new era switches one lane to the newer descriptor. A block
+descriptors. Each new dynasty switches one lane to the newer descriptor. A block
 declares the previous slot's votes that its proposer holds, with one support bit
 per declaration. Fork choice merges those declarations with signed votes. For
 epoch settlement of pending builder payments, blocks also carry head vote
@@ -485,12 +484,12 @@ class AttestationCommitteeBits(BitVector):
     LENGTH = ATTESTATION_COMMITTEES_PER_ROUND
 ```
 
-### New `Era`
+### New `Dynasty`
 
 ```python
-class Era(Uint64):
+class Dynasty(Uint64):
     """
-    A chain counter that advances when a block of the current era is finalized.
+    A chain counter that advances when a block of the current dynasty is finalized.
     """
 ```
 
@@ -508,14 +507,7 @@ class HeadVoteWeights(List[Uint16]):
 
 ```python
 class HeadVoteLotteries(Vector[HeadVoteLottery]):
-    LENGTH = 3 + (2 * SLOTS_PER_EPOCH + HEAD_VOTE_COMMITTEE_SIZE - 1) // HEAD_VOTE_COMMITTEE_SIZE
-```
-
-### New `HeadVoteEraHistory`
-
-```python
-class HeadVoteEraHistory(Vector[Era]):
-    LENGTH = 2 * SLOTS_PER_EPOCH
+    LENGTH = 3
 ```
 
 ### New `HeadVoteCredentials`
@@ -749,11 +741,11 @@ parameters: the denominator is not a bound on the number of tickets on one head
 or across competing heads. In particular, the thresholds do not imply
 deterministic quorum intersection.
 
-The active descriptors retain the stake in their snapshots until the era cursor
-replaces them. Through a finality stall, the ticket draws remain fresh each slot
-but their weights remain fixed. Validators that exit or are slashed keep the
-tickets their frozen weights earn. New validators become eligible when a later
-descriptor captures their stake.
+The active descriptors retain the stake in their snapshots until the dynasty
+cursor replaces them. Through a finality stall, the ticket draws remain fresh
+each slot but their weights remain fixed. Validators that exit or are slashed
+keep the tickets their frozen weights earn. New validators become eligible when
+a later descriptor captures their stake.
 
 Eligibility uses the frozen weights, so nodes do not change a vote's weight
 based on locally seen slashing evidence or another branch's exit state. Budget
@@ -916,7 +908,7 @@ keeps its name but moves to a new position.
 
 ```python
 class BeaconState(ProgressiveContainer):
-    ACTIVE_FIELDS = active_fields(width=69, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
+    ACTIVE_FIELDS = active_fields(width=67, gaps=(15, 16, 17, 18, 19, 20, 22, 23, 46, 47))
 
     genesis_time: Uint64
     genesis_validators_root: Root
@@ -1005,13 +997,11 @@ class BeaconState(ProgressiveContainer):
     # [New in PQ:EIP8453]
     head_vote_participation: HeadVoteParticipation
     # [New in PQ:EIP8453]
-    era: Era
-    era_start_slot: Slot
-    head_vote_era_history: HeadVoteEraHistory
+    dynasty: Dynasty
+    dynasty_start_slot: Slot
+    previous_dynasty_start_slot: Slot
     head_vote_lotteries: HeadVoteLotteries
-    head_vote_sealed_lottery: HeadVoteLottery
-    head_vote_pending_weights: HeadVoteWeights
-    head_vote_latest_weights: HeadVoteWeights
+    head_vote_capture_epoch: Epoch
 ```
 
 #### `Builder`
@@ -2339,10 +2329,11 @@ def get_aggregate_participants(
 
 Fork choice uses the voting head's post-state and the full duty slot, including
 when the head is older than the duty. Block inclusion uses the including chain's
-era at the end of the duty slot, carried forward over empty slots. For era `e`,
-the cursor is `e % T` and the two descriptors have batch numbers `e // T` and
-`e // T + 1`. Relabelling a descriptor at rollover preserves its batch number,
-so its unchanged lanes retain their draws for the same slot.
+dynasty at the end of the duty slot, carried forward over empty slots. A duty
+before the previous dynasty has no weight for inclusion. For dynasty `d`, the
+cursor is `d % T` and the two descriptors have batch numbers `d // T` and
+`d // T + 1`. Rollover preserves the batch number of the descriptor that remains
+active, so its unchanged lanes retain their draws for the same slot.
 
 The draft uses the registered RANDAO tree. A proposer reveal also reveals the
 proposer's AC opening for that slot, and an AC vote reveals the voter's RANDAO
@@ -2360,12 +2351,13 @@ def get_head_vote_weight(
     if not is_valid_vrf_proof(state, validator_index, slot, proof):
         return Uint64(0)
 
-    era = state.era
-    if slot < state.slot:
-        assert state.slot - slot < 2 * SLOTS_PER_EPOCH
-        era = state.head_vote_era_history[slot % len(state.head_vote_era_history)]
-    batch = Uint64(era // HEAD_VOTE_COMMITTEE_SIZE)
-    cursor = era % HEAD_VOTE_COMMITTEE_SIZE
+    dynasty = state.dynasty
+    if slot < state.dynasty_start_slot:
+        if slot < state.previous_dynasty_start_slot:
+            return Uint64(0)
+        dynasty -= 1
+    batch = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
+    cursor = dynasty % HEAD_VOTE_COMMITTEE_SIZE
     lotteries = state.head_vote_lotteries
     old_lanes = compute_head_vote_lanes(
         lotteries[batch % len(lotteries)], batch, slot, validator_index, proof[0]
@@ -2658,8 +2650,6 @@ def process_slot(state: BeaconState) -> None:
     previous_block_root = hash_tree_root(state.latest_block_header)
     state.block_roots[slot_index] = previous_block_root
     # [New in PQ:EIP8453]
-    state.head_vote_era_history[state.slot % len(state.head_vote_era_history)] = state.era
-    # [New in PQ:EIP8453]
     # Cache target checkpoint root
     if state.target_checkpoint.root == Root():
         state.target_checkpoint.root = previous_block_root
@@ -2790,7 +2780,7 @@ def process_epoch(state: BeaconState) -> None:
     process_proposer_lookahead(state)
     process_ptc_window(state)
     # [New in PQ:EIP8453]
-    process_head_vote_lottery_inputs(state)
+    seal_head_vote_lottery(state)
     # [New in PQ:EIP8205]
     process_preregistration_expiry(state)
 ```
@@ -2837,24 +2827,19 @@ def get_head_vote_weights(state: BeaconState, epoch: Epoch) -> HeadVoteWeights:
     )
 ```
 
-#### New `process_head_vote_lottery_inputs`
+#### New `seal_head_vote_lottery`
 
-At the boundary into epoch E, seal the balances captured at the start of E−2
-with the completed RANDAO mix of E−1. A zero-weight snapshot leaves the last
-positive sealed lottery in place. Registry indices are append-only and map to
-the same public keys on descendants of the snapshot.
+Seal at the end of the first full epoch after capture, using that epoch's
+completed RANDAO mix. The snapshot is fixed before that epoch begins.
 
 ```python
-def process_head_vote_lottery_inputs(state: BeaconState) -> None:
+def seal_head_vote_lottery(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
-    weights = state.head_vote_pending_weights
-    total = Uint64(sum(int(weight) for weight in weights))
-    if total > 0:
-        state.head_vote_sealed_lottery = HeadVoteLottery(
-            weights=weights, total_weight=total, seed=get_randao_mix(state, epoch)
+    if epoch > GENESIS_EPOCH and epoch - 1 == state.head_vote_capture_epoch:
+        batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
+        state.head_vote_lotteries[batch % len(state.head_vote_lotteries)].seed = get_randao_mix(
+            state, epoch
         )
-    state.head_vote_pending_weights = state.head_vote_latest_weights
-    state.head_vote_latest_weights = get_head_vote_weights(state, epoch + 1)
 ```
 
 #### New `process_preregistration_expiry`
@@ -3004,8 +2989,9 @@ def process_block(state: BeaconState, block: BeaconBlock) -> None:
     # [New in PQ:EIP8453]
     height = state.target_checkpoint.height
     process_height_events(state)
-    if state.target_checkpoint.height > height and process_era(state):
-        process_head_vote_lottery_rotation(state)
+    if state.target_checkpoint.height > height and process_dynasty(state):
+        if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
+            capture_head_vote_lottery(state)
 ```
 
 #### Modified `process_randao`
@@ -3338,13 +3324,16 @@ def process_attestation(state: BeaconState, attestation: Attestation) -> None:
 ###### New `process_head_vote`
 
 *Note*: The beacon state credits a distinct voter for the canonical block of the
-duty slot until the payment reaches its target. `process_stark` verifies the
+duty slot until the payment reaches its target. The epoch window matches the two
+epochs of payment participation kept in state. A vote must also belong to the
+current or previous dynasty on the including chain. `process_stark` verifies the
 XMSS signatures; this operation checks the Merkle openings.
 
 ```python
 def process_head_vote(state: BeaconState, vote: HeadVote) -> None:
     data = vote.data
     assert data.slot + MIN_ATTESTATION_INCLUSION_DELAY <= state.slot
+    assert data.slot >= state.previous_dynasty_start_slot
     assert compute_epoch_at_slot(data.slot) in (get_previous_epoch(state), get_current_epoch(state))
     assert is_head_vote_payload_status_valid(state, data)
 
@@ -4024,34 +4013,51 @@ def process_height_events(state: BeaconState) -> None:
         advance_height(state)
 ```
 
-##### New `process_era`
+##### New `process_dynasty`
 
-Call at a height entry after recording finality. Since eras are monotone along
-the chain, a finalized block at or after the current era's start slot belongs to
-that era. The entry block starts the next era.
+Call at a height entry after recording finality. Since dynasties are monotone
+along the chain, a finalized block at or after the current dynasty's start slot
+belongs to that dynasty. The entry block starts the next dynasty.
 
 ```python
-def process_era(state: BeaconState) -> bool:
-    if state.finalized_checkpoint.height == 0 or state.finalized_slot < state.era_start_slot:
+def process_dynasty(state: BeaconState) -> bool:
+    if state.finalized_checkpoint.height == 0 or state.finalized_slot < state.dynasty_start_slot:
         return False
-    state.era += 1
-    state.era_start_slot = state.slot
+    state.dynasty += 1
+    state.previous_dynasty_start_slot = state.dynasty_start_slot
+    state.dynasty_start_slot = state.slot
     return True
 ```
 
-##### New `process_head_vote_lottery_rotation`
+##### New `capture_head_vote_lottery`
 
-Pin the next descriptor in the era immediately before rollover. A descendant can
-enter the rollover era only by finalizing a block that already carries the
-pinned descriptor. The ring retains older descriptors for votes from the
-previous and current epochs, even when a rollover intervenes.
+At rollover, the third ring entry becomes the newest descriptor and the old
+entry is retained for votes from the previous dynasty. The next dynasty frees
+that retired entry, which can then capture weights for the next rollover.
+
+The fastest dynasty advance takes two slots: the height opened by the dynasty's
+entry block can be justified only by a later block, and the resulting pending
+justification can only be finalized by another block. From capture at cursor 1
+to cursor `T - 1` there are at least `2 * (T - 2)` slots: 1020 on mainnet and 28
+on minimal. Sealing takes at most two epochs (64 or 16 slots, respectively), so
+every block of the penultimate dynasty already carries the sealed descriptor. A
+chain entering the rollover dynasty must finalize one of those blocks. Registry
+indices are append-only on descendants of the capture block.
 
 ```python
-def process_head_vote_lottery_rotation(state: BeaconState) -> None:
-    if state.era % HEAD_VOTE_COMMITTEE_SIZE == HEAD_VOTE_COMMITTEE_SIZE - 1:
-        batch = state.era // HEAD_VOTE_COMMITTEE_SIZE + 2
-        lotteries = state.head_vote_lotteries
-        lotteries[batch % len(lotteries)] = state.head_vote_sealed_lottery
+def capture_head_vote_lottery(state: BeaconState) -> None:
+    epoch = get_current_epoch(state)
+    batch = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
+    lotteries = state.head_vote_lotteries
+    weights = get_head_vote_weights(state, epoch)
+    total = Uint64(sum(int(weight) for weight in weights))
+    if total == 0:
+        newest = lotteries[(batch - 1) % len(lotteries)]
+        weights, total = newest.weights, newest.total_weight
+    lotteries[batch % len(lotteries)] = HeadVoteLottery(
+        weights=weights, total_weight=total, seed=Bytes32()
+    )
+    state.head_vote_capture_epoch = epoch
 ```
 
 ##### New `advance_height`

@@ -310,10 +310,10 @@ because the state stores only the commitment.
 FFG checkpoint, and the target of height 1 is the latest block before the
 upgrade. Participation in the last epoch before the upgrade is not rewarded.
 
-AC starts at era zero with cursor zero. Batches zero and one use the eligible
-weights at the fork and the completed pre-fork RANDAO mix (the genesis mix at a
-genesis fork). Their batch numbers distinguish their draws. Later descriptors
-pair captured weights with a mix completed after capture.
+AC starts at dynasty zero with cursor zero. Batches zero and one use the
+eligible weights at the fork and the completed pre-fork RANDAO mix (the genesis
+mix at a genesis fork). Their batch numbers distinguish their draws. The third
+entry captures its first snapshot when dynasty one begins.
 
 ```python
 def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
@@ -427,13 +427,11 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
         # [New in PQ:EIP8453]
         head_vote_participation=HeadVoteParticipation(),
         # [New in PQ:EIP8453]
-        era=Era(0),
-        era_start_slot=pre.slot,
-        head_vote_era_history=HeadVoteEraHistory(),
+        dynasty=Dynasty(0),
+        dynasty_start_slot=pre.slot,
+        previous_dynasty_start_slot=pre.slot,
         head_vote_lotteries=HeadVoteLotteries(),
-        head_vote_sealed_lottery=HeadVoteLottery.empty(),
-        head_vote_pending_weights=HeadVoteWeights(),
-        head_vote_latest_weights=HeadVoteWeights(),
+        head_vote_capture_epoch=FAR_FUTURE_EPOCH,
     )
 
     # [New in PQ:EIP8453]
@@ -446,8 +444,6 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
     )
     post.head_vote_lotteries[0] = lottery
     post.head_vote_lotteries[1] = lottery
-    post.head_vote_sealed_lottery = lottery
-    post.head_vote_latest_weights = weights
 
     return post
 ```

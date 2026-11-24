@@ -437,15 +437,17 @@ to the declarations and support bits returned by
 
 Independently select up to `MAX_HEAD_VOTES` signed aggregates that satisfy
 [`process_head_vote`](./beacon-chain.md#new-process_head_vote). Include votes
-that add uncredited seats for the canonical block of their slot, from the next
-slot through the last slot of the following epoch. Proposers may retain these
-aggregates beyond the lifetime of the fork-choice message pool. They need not
-match any declaration.
+that add uncredited voters for the canonical block of their slot. The duty slot
+must be in the including chain's current or previous dynasty and in the current
+or previous epoch for payment accounting. Proposers may retain these aggregates
+beyond the lifetime of the fork-choice message pool. They need not match any
+declaration.
 
 Include at most `2 * HEAD_VOTE_COMMITTEE_SIZE` credentials across all aggregates
 in the block. Recheck each credential against the including chain's duty-slot
-era and lotteries. A vote with positive weight on its voted head can have zero
-weight for inclusion when the two chains have different duty-slot eras.
+dynasty and lotteries. A vote with positive weight on its voted head can have
+zero weight for inclusion when the two chains have different duty-slot
+dynasties.
 
 ##### Attestations
 
@@ -937,8 +939,8 @@ with an `AttestationProof` in place of an aggregate signature.
 
 Construct `aggregate_vote` using `get_aggregate_head_vote` with head vote
 messages for the same slot, block root and payload status. A validator holding
-several seats in the committee is listed and signs once, and its vote counts for
-each of its seats.
+several seats in the committee contributes one signature and one voter toward
+the builder payment target.
 
 ```python
 def get_aggregate_head_vote(state: BeaconState, messages: Sequence[HeadVoteMessage]) -> HeadVote:

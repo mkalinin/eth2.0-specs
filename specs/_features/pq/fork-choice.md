@@ -1923,7 +1923,9 @@ def on_payload_attestation_message(
 
 ### New `on_head_vote_message`
 
-*Note*: Validates and stores head vote P2P message.
+*Note*: Validates and stores a head vote on receipt. Its head must descend from
+the finalized checkpoint at admission. Subsequent finality updates resolve
+support using the current frame without undoing recorded cast weight.
 
 ```python
 def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
@@ -1933,6 +1935,11 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     if (
         data.beacon_block_root not in store.blocks
         or data.beacon_block_root not in store.block_states
+    ):
+        return
+    finalized_root = store.finalized_checkpoint.root
+    if finalized_root != Root() and not is_ancestor_root(
+        store, data.beacon_block_root, finalized_root
     ):
         return
     block_slot = store.blocks[data.beacon_block_root].slot

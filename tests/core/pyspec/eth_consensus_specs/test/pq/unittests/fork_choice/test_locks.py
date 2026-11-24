@@ -950,6 +950,27 @@ def test_responsive_vote_accepts_other_in_frame_proposer(spec, tree):
     )
 
 
+def test_head_vote_receipt_respects_current_finalized_subtree(spec, tree):
+    store, nodes = tree
+    state = store.block_states[nodes["A"].root]
+    add_elected_validator(spec, state)
+
+    def message(status):
+        data = spec.HeadVoteData(slot=11, beacon_block_root=nodes["A"].root, payload_status=status)
+        return spec.HeadVoteMessage(
+            validator_index=0,
+            data=data,
+            signature=spec.get_head_vote_signature(state, data, 1),
+            proof=spec.VRFProof(data=get_vrf_proof(0)),
+        )
+
+    admitted = message(spec.PAYLOAD_STATUS_EMPTY)
+    spec.on_head_vote_message(store, admitted)
+    store.finalized_checkpoint = spec.HeightCheckpoint(height=1, root=nodes["B"].root)
+    spec.on_head_vote_message(store, message(spec.PAYLOAD_STATUS_FULL))
+    assert store.head_vote_messages[11] == [admitted]
+
+
 @pytest.mark.parametrize("status", [0, 1, 2])
 @pytest.mark.parametrize("in_frame", [False, True])
 def test_readiness_matches_proposer_support(spec, tree, status, in_frame):
@@ -1018,7 +1039,7 @@ def test_proposer_view_keeps_vote_weight_from_voted_head(spec, tree, monkeypatch
     propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
     block = store.blocks.pop(nodes["B1"].root)
     store.block_states[block.parent_root] = store.block_states[nodes["B1"].root].copy()
-    store.block_states[block.parent_root].era = spec.Era(1)
+    store.block_states[block.parent_root].dynasty = spec.Dynasty(1)
     # Isolate fork-choice admission from the already-validated state transition.
     monkeypatch.setattr(spec, "state_transition", lambda state, signed, validate_result: None)
     signed = spec.SignedBeaconBlock(message=block)

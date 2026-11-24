@@ -67,7 +67,7 @@ def prove_head_votes(spec, state, votes):
     return spec.AttestationProof(data=spec.stark.ProveAggregates(statements, signatures))
 
 
-def test_stalled_era_uses_frozen_stake_and_slot_opening(spec, state):
+def test_stalled_dynasty_uses_frozen_stake_and_slot_opening(spec, state):
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(0))
     # A different bottom sibling makes this opening slot-specific.
@@ -82,7 +82,7 @@ def test_stalled_era_uses_frozen_stake_and_slot_opening(spec, state):
     assert spec.get_head_vote_weight(state, slot, index, proof) == spec.HEAD_VOTE_COMMITTEE_SIZE
     state.validators[0].slashed = True
     state.validators[0].exit_epoch = spec.Epoch(0)
-    assert not spec.process_era(state)
+    assert not spec.process_dynasty(state)
     assert spec.get_head_vote_weight(state, slot, index, proof) == spec.HEAD_VOTE_COMMITTEE_SIZE
     assert spec.get_head_vote_weight(state, slot + 1, index, proof) == 0
     new_validator_proof = spec.VRFProof(data=get_vrf_proof(1))
@@ -90,23 +90,21 @@ def test_stalled_era_uses_frozen_stake_and_slot_opening(spec, state):
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), new_validator_proof) == 0
 
 
-def test_lottery_rollover_retains_duty_state(spec, state):
+def test_lottery_rollover_retains_only_previous_dynasty(spec, state):
     # Disjoint snapshots make selection from the wrong side of the cursor visible.
     first = spec.HeadVoteLottery(weights=spec.HeadVoteWeights(data=[1, 0]), total_weight=1)
     second = spec.HeadVoteLottery(weights=spec.HeadVoteWeights(data=[0, 1]), total_weight=1)
     state.head_vote_lotteries[0] = first
     state.head_vote_lotteries[1] = second
-    state.head_vote_sealed_lottery = first
+    state.head_vote_lotteries[2] = first
     size = spec.HEAD_VOTE_COMMITTEE_SIZE
-    state.era = spec.Era(size - 2)
-    state.era_start_slot = spec.Slot(1)
+    state.dynasty = spec.Dynasty(size - 2)
+    state.dynasty_start_slot = spec.Slot(1)
     state.finalized_checkpoint.height = spec.Height(1)
-    assert not spec.process_era(state)
+    assert not spec.process_dynasty(state)
     state.finalized_slot = spec.Slot(1)
-    assert spec.process_era(state)
-    spec.process_head_vote_lottery_rotation(state)
-    assert state.era == size - 1
-    assert state.head_vote_lotteries[2] == first
+    assert spec.process_dynasty(state)
+    assert state.dynasty == size - 1
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(1))
     lanes = spec.compute_head_vote_lanes(
@@ -116,16 +114,14 @@ def test_lottery_rollover_retains_duty_state(spec, state):
     expected = sum(lane < size - 1 for lane in lanes)
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
 
-    spec.process_slots(state, slot + 1)
-    assert not spec.process_era(state)
+    spec.process_slots(state, slot + 2)
+    assert not spec.process_dynasty(state)
     state.finalized_slot = slot
-    assert spec.process_era(state)
-    spec.process_head_vote_lottery_rotation(state)
-    assert state.era == size
+    assert spec.process_dynasty(state)
+    assert state.dynasty == size
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == expected
 
-    # The voted head admitted this credential at T - 1. An including chain that
-    # recorded era zero for the same duty still uses only batch zero.
+    # The pre-rollover duty remains eligible immediately after rollover.
     data = spec.HeadVoteData(
         slot=slot,
         beacon_block_root=spec.get_block_root_at_slot(state, slot),
@@ -139,9 +135,6 @@ def test_lottery_rollover_retains_duty_state(spec, state):
     )
     aggregate = spec.get_aggregate_head_vote(state, [message])
     spec.process_head_vote(state, aggregate)
-    state.head_vote_era_history[slot % len(state.head_vote_era_history)] = spec.Era(0)
-    with pytest.raises(AssertionError):
-        spec.process_head_vote(state, aggregate)
 
     new_proof = spec.VRFProof(data=get_vrf_proof(1))
     assert spec.get_head_vote_weight(state, state.slot, spec.ValidatorIndex(1), new_proof) == size
@@ -151,6 +144,32 @@ def test_lottery_rollover_retains_duty_state(spec, state):
         )
         != lanes
     )
+
+    # One more dynasty makes the duty too old even in the same epoch.
+    spec.process_slots(state, slot + 4)
+    state.finalized_slot = slot + 2
+    assert spec.process_dynasty(state)
+    assert state.dynasty == size + 1
+    spec.capture_head_vote_lottery(state)
+    assert len(state.head_vote_lotteries) == 3
+    assert state.head_vote_lotteries[0].total_weight > first.total_weight
+    assert state.head_vote_lotteries[1] == second
+    assert state.head_vote_lotteries[2] == first
+    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == 0
+    with pytest.raises(AssertionError):
+        spec.process_head_vote(state, aggregate)
+
+    # Capture fixes the weights; only the next full epoch's mix seals them.
+    captured = state.head_vote_lotteries[0].weights.copy()
+    state.validators[0].slashed = True
+    epoch = spec.get_current_epoch(state)
+    spec.process_slots(state, spec.compute_start_slot_at_epoch(epoch + 1))
+    assert state.head_vote_lotteries[0].seed == spec.Bytes32()
+    mix = spec.Bytes32(b"\x37" * 32)
+    state.randao_mixes[(epoch + 1) % spec.EPOCHS_PER_HISTORICAL_VECTOR] = mix
+    spec.process_slots(state, spec.compute_start_slot_at_epoch(epoch + 2))
+    assert state.head_vote_lotteries[0].seed == mix
+    assert state.head_vote_lotteries[0].weights == captured
 
 
 def test_same_slot_vote_records_participation(spec, state):
@@ -366,22 +385,24 @@ def test_declaration_slot_and_full_pool_bound(spec, state, monkeypatch):
         spec.process_operations(state, body)
 
 
-@pytest.mark.parametrize("valid_proof", [True, False])
-def test_block_proof_covers_aggregates_not_declarations(spec, state, valid_proof):
+def test_block_proof_covers_aggregates_not_declarations(spec, state):
     # A signed aggregate of an earlier slot counts for payments only through the
     # block's proof; the declarations of the previous slot carry no signature
     # and add no statement to it
     body = spec.BeaconBlockBody()
-    body.head_votes.append(signed_vote(spec, state, 1))
+    vote = signed_vote(spec, state, 1, count=1)
+    body.head_votes.append(vote)
     body.head_vote_declarations.append(
         spec.HeadVoteDeclaration(validator_index=1234, beacon_block_root=spec.Root(b"\x01" * 32))
     )
     body.head_vote_support_bits = spec.HeadVoteSupportBits(data=[True])
     body.proof = prove_head_votes(spec, state, body.head_votes)
-    if valid_proof:
-        spec.process_operations(state, body)
-    else:
-        # A proof of no statements does not cover the aggregate
-        body.proof = spec.AttestationProof()
-        with pytest.raises(AssertionError):
-            spec.process_operations(state, body)
+    spec.process_operations(state.copy(), body)
+
+    # Keep the nonempty proof but change the aggregate's signing identity.
+    other = next(islice(elected_messages(spec, state, vote.data), 1, None))
+    body.head_votes[0] = spec.get_aggregate_head_vote(state, [other])
+    with pytest.raises(AssertionError):
+        spec.process_operations(state.copy(), body)
+    body.proof = prove_head_votes(spec, state, body.head_votes)
+    spec.process_operations(state, body)
