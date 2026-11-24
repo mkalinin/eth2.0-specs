@@ -1611,14 +1611,14 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
 
 #### New `compute_ac_seat_indices`
 
-For each balance increment the lottery issues `T // W` tickets plus a ticket
-with probability `(T % W) / W`, where `T` is the seat count and `W` is the
-frozen total weight. Each ticket independently chooses a seat index uniformly,
-with replacement. A validator of weight `w` therefore has expected weight
-`w / W` at each seat index. Repeated seat indices count as separate tickets.
-This reference sampler takes at most one Bernoulli trial per balance increment.
-Each snapshot used for selection is assumed to have positive eligible weight.
-Clients may cache the total weight for each snapshot.
+For a validator of weight `w`, the expected number of tickets is `w * T / W`,
+where `T` is the seat count and `W` is the frozen total weight. The validator
+receives the integer part plus one ticket with probability equal to the
+fractional part. Each ticket independently chooses a seat index uniformly, with
+replacement, giving the validator expected weight `w / W` at each seat index.
+Repeated seat indices count as separate tickets. Each snapshot used for
+selection is assumed to have positive eligible weight. Clients may cache the
+total weight for each snapshot.
 
 ```python
 def compute_ac_seat_indices(
@@ -1632,7 +1632,7 @@ def compute_ac_seat_indices(
         return []
     weight = snapshot.weights[validator_index]
     total = sum(int(weight) for weight in snapshot.weights)
-    base, remainder = divmod(int(HEAD_VOTE_COMMITTEE_SIZE), total)
+    count, remainder = divmod(int(weight) * int(HEAD_VOTE_COMMITTEE_SIZE), total)
     seed = sha256(
         DOMAIN_HEAD_VOTE_COMMITTEE
         + snapshot.seed
@@ -1641,23 +1641,16 @@ def compute_ac_seat_indices(
         + uint_to_bytes(validator_index)
         + secret
     )
-    # Rejection sampling gives an exact uniform residue modulo the total weight.
-    limit = 2**256 - 2**256 % total
-    count = int(weight) * base
     if remainder != 0:
-        for increment in range(weight):
-            attempt = Uint64(0)
-            while True:
-                draw = int.from_bytes(
-                    sha256(
-                        seed + b"\x00" + uint_to_bytes(Uint64(increment)) + uint_to_bytes(attempt)
-                    ),
-                    "little",
-                )
-                if draw < limit:
-                    count += int(draw % total < remainder)
-                    break
-                attempt += 1
+        # Reject the incomplete range so each residue modulo total is equally likely.
+        limit = 2**256 - 2**256 % total
+        attempt = Uint64(0)
+        while True:
+            draw = int.from_bytes(sha256(seed + b"\x00" + uint_to_bytes(attempt)), "little")
+            if draw < limit:
+                count += int(draw % total < remainder)
+                break
+            attempt += 1
     return [
         Uint64(
             bytes_to_uint64(sha256(seed + b"\x01" + uint_to_bytes(Uint64(ticket)))[:8])

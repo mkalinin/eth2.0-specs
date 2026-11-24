@@ -95,7 +95,32 @@ def test_snapshot_total_can_exceed_uint16(spec, state):
     weight = int(spec.MAX_EFFECTIVE_BALANCE_ELECTRA // spec.EFFECTIVE_BALANCE_INCREMENT)
     assert spec.is_valid_vrf_proof(state, index, slot, proof)
     state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[weight] * 32))
-    assert spec.get_head_vote_weight(state, slot, index, proof) <= weight
+    assert spec.get_head_vote_weight(state, slot, index, proof) in (
+        int(spec.HEAD_VOTE_COMMITTEE_SIZE) // 32,
+        (int(spec.HEAD_VOTE_COMMITTEE_SIZE) + 31) // 32,
+    )
+
+
+@pytest.mark.parametrize("extra_ticket", [False, True])
+def test_snapshot_sampler_rounds_at_fractional_boundary(spec, monkeypatch, extra_ticket):
+    snapshot = spec.ACSnapshot(weights=spec.ACWeights(data=[2, 1]))
+    index = spec.ValidatorIndex(0)
+    count, remainder = divmod(2 * int(spec.HEAD_VOTE_COMMITTEE_SIZE), 3)
+    accepted_draw = remainder - int(extra_ticket)
+    sha256 = spec.sha256
+
+    def hash_with_controlled_draw(data):
+        if len(data) == 41 and data[32] == 0:
+            draw = 2**256 - 1 if data[-8:] == bytes(8) else accepted_draw
+            return spec.Bytes32(draw.to_bytes(32, "little"))
+        return sha256(data)
+
+    monkeypatch.setattr(spec, "sha256", hash_with_controlled_draw)
+    seat_indices = spec.compute_ac_seat_indices(
+        snapshot, spec.Uint64(0), spec.Slot(1), index, spec.Bytes32()
+    )
+    assert len(seat_indices) == count + int(extra_ticket)
+    assert all(seat_index < spec.HEAD_VOTE_COMMITTEE_SIZE for seat_index in seat_indices)
 
 
 def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
