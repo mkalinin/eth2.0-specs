@@ -279,8 +279,10 @@ def test_ac_full_rotation_waits_for_finalized_seal(spec, state, monkeypatch):
     assert snapshot.seed_epoch == seed_epoch
     assert snapshot.seed == spec.Bytes32()
     state.finalized_slot = state.slot
+    target_height = state.target_checkpoint.height
     spec.advance_height(state)
     assert state.dynasty == 1
+    assert state.target_checkpoint.height == target_height + 1
 
     spec.process_slots(state, spec.compute_start_slot_at_epoch(seed_epoch))
     mix = spec.Bytes32(b"\x37" * 32)
