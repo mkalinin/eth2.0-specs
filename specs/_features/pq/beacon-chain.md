@@ -740,7 +740,10 @@ sized against the upper tail of the total ticket count to make disjoint fast
 quorums unlikely. The lower unlock threshold is sized against adversarial ticket
 weight while allowing honest voters to move older locks with less support. The
 mainnet lock thresholds use a 10× seed-grinding buffer in their per-slot risk
-budget; they do not imply deterministic quorum intersection.
+budget; they do not imply deterministic quorum intersection. Under a Poisson
+model, two thirds of stake voting reaches the mainnet fast-lock threshold in
+about 79% of slots; recent fast locks provide sources for finality-gadget
+duties.
 
 The builder payment target is half the expected committee size, sized to limit
 payments backed by adversarial voters alone while remaining reachable by honest
@@ -766,7 +769,7 @@ snapshot captures their stake.
 Eligibility uses the frozen weights, so nodes do not change a vote's weight
 based on locally seen slashing evidence or another branch's exit state. Budget
 the frozen weight of exited or slashed validators as potentially adversarial.
-Honest exits that stop voting make the absolute half and three-quarter
+Honest exits that stop voting make the absolute fast-lock and unlock ticket
 thresholds harder to reach, but their absent votes do not enter the relative
 quorum. In particular, honest votes still need to outweigh participating
 adversarial votes.

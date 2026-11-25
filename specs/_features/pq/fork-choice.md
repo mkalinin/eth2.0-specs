@@ -1041,8 +1041,7 @@ def compute_head_walk_score(
 
 *Note*: A node is eligible for the head walk if it is a full or empty node from
 the previous slot, its parent block is not yet a viable head, its block is from
-the current slot, or its head-walk score exceeds half the participating
-committee seats.
+the current slot, or its head-walk score exceeds half the participating tickets.
 
 ```python
 def is_eligible_for_head_walk(
@@ -1072,7 +1071,7 @@ def is_eligible_for_head_walk(
     voting_seats_count = sum_head_vote_weights(votes, slot)
     score = compute_head_walk_score(store, votes, support_votes, slot, node)
 
-    # Require a strict majority of participating committee seats
+    # Require a strict majority of participating tickets
     return 2 * score > voting_seats_count
 ```
 
@@ -1179,9 +1178,9 @@ def compute_confirmation_score(
 #### New `get_confirmed_head`
 
 *Note*: Runs a confirmation walk using the confirmation score, requiring
-eligible nodes to score more than half the participating committee seats.
-Returns `None` if the resulting head is ineligible, including when the walk
-stops at the finalized node.
+eligible nodes to score more than half the participating tickets. Returns `None`
+if the resulting head is ineligible, including when the walk stops at the
+finalized node.
 
 ```python
 def get_confirmed_head(
