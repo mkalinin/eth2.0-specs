@@ -2384,10 +2384,11 @@ def compute_ac_seat_indices(
 
 #### New `get_head_vote_weight`
 
-Fork choice uses the voting head's post-state and the full duty slot, including
-when the head is older than the duty. Block inclusion uses the including chain's
-dynasty at the end of the duty slot, carried forward over empty slots. A duty
-before the previous dynasty has no weight for inclusion.
+Validator duties use the voting head's post-state and the full duty slot,
+including when the head is older than the duty. Block inclusion uses the
+including chain's dynasty at the end of the duty slot, carried forward over
+empty slots. A duty before the previous dynasty has no weight for inclusion.
+Fork-choice tallies use the node's highest known dynasty instead.
 
 The draft uses the registered RANDAO tree. A proposer reveal also reveals the
 proposer's AC opening for that slot, and an AC vote reveals the voter's RANDAO

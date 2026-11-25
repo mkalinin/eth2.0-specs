@@ -325,7 +325,7 @@ def test_head_vote_status_uses_canonical_slot_evidence(spec, state, root_kind, s
     valid = root_kind == "sibling" or (root_kind == "same_slot") == (
         status == spec.PAYLOAD_STATUS_PENDING
     )
-    assert (spec.get_head_vote_message_weight(state, message) > 0) == valid
+    assert spec.is_valid_head_vote_message(state, message) == valid
     aggregate = spec.HeadVote(
         data=data,
         credentials=spec.HeadVoteCredentials(
@@ -366,7 +366,7 @@ def test_genesis_vote_status_and_participation_require_canonical_root(
         proof=proof,
     )
     valid = not canonical or status == spec.PAYLOAD_STATUS_PENDING
-    assert (spec.get_head_vote_message_weight(state, message) > 0) == valid
+    assert spec.is_valid_head_vote_message(state, message) == valid
     aggregate = spec.HeadVote(
         data=data,
         credentials=spec.HeadVoteCredentials(

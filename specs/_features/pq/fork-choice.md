@@ -39,6 +39,8 @@
   - [Available chain](#available-chain)
     - [New `ACVote`](#new-acvote)
     - [New `get_ac_vote`](#new-get_ac_vote)
+    - [New `get_ac_tally_state`](#new-get_ac_tally_state)
+    - [New `compute_ac_vote_weight`](#new-compute_ac_vote_weight)
     - [New `sum_head_vote_weights`](#new-sum_head_vote_weights)
     - [New `get_block_and_payload_receipt_time`](#new-get_block_and_payload_receipt_time)
     - [New `get_vote_resolution_time`](#new-get_vote_resolution_time)
@@ -75,7 +77,7 @@
     - [New `update_confirmation`](#new-update_confirmation)
     - [New `unlock`](#new-unlock)
   - [`on_head_vote_message` helpers](#on_head_vote_message-helpers)
-    - [New `get_head_vote_message_weight`](#new-get_head_vote_message_weight)
+    - [New `is_valid_head_vote_message`](#new-is_valid_head_vote_message)
 - [Handlers](#handlers)
   - [Modified `on_tick`](#modified-on_tick)
   - [Modified `on_block`](#modified-on_block)
@@ -208,6 +210,7 @@ class Store:
     head_vote_messages: dict[Slot, list[HeadVoteMessage]]
     head_vote_message_receipt_times: dict[Root, Uint64]
     validated_head_votes: dict[Root, ACVote]
+    ac_tally_root: Root | None = None
     prepared_head_vote: tuple[Slot, ForkChoiceNode] | None = None
     pending_head_votes: list[tuple[HeadVoteMessage, ACVote]] = field(default_factory=list)
 ```
@@ -256,6 +259,7 @@ def get_forkchoice_store(anchor_state: BeaconState, anchor_block: BeaconBlock) -
         head_vote_messages={},
         head_vote_message_receipt_times={},
         validated_head_votes={},
+        ac_tally_root=anchor_root,
     )
 ```
 
@@ -632,38 +636,93 @@ class ACVote:
     slot: Slot
     pubkey: XMSSPubkey
     supported_node: ForkChoiceNode
-    weight: Uint64
+    vrf_root: Root
+    secret: Bytes32
 ```
 
 #### New `get_ac_vote`
 
 ```python
-def get_ac_vote(pubkey: XMSSPubkey, data: HeadVoteData, weight: Uint64) -> ACVote:
+def get_ac_vote(state: BeaconState, message: HeadVoteMessage) -> ACVote:
+    data = message.data
+    validator = state.validators[message.validator_index]
     supported_node = ForkChoiceNode(
         root=data.beacon_block_root,
         payload_status=data.payload_status,
     )
     return ACVote(
         slot=data.slot,
-        pubkey=pubkey,
+        pubkey=validator.pubkey,
         supported_node=supported_node,
-        weight=weight,
+        vrf_root=validator.vrf_root,
+        secret=message.proof[0],
     )
+```
+
+#### New `get_ac_tally_state`
+
+Use the accepted PQ post-state with the highest dynasty, breaking ties by block
+root. This high-water mark includes accepted blocks that later fail the FG
+height filter; the filter still controls which heads receive support. Before the
+first PQ block, use the upgraded finalized state for dynasty zero. The state is
+not pinned to a slot. Importing a block can change the next tally, without
+revisiting locks or votes already prepared at their scheduled times.
+
+```python
+def get_ac_tally_state(store: Store) -> BeaconState:
+    root = store.ac_tally_root
+    return get_block_state(store, store.finalized_checkpoint.root if root is None else root)
+```
+
+#### New `compute_ac_vote_weight`
+
+The tally uses its current dynasty, even for a vote from the preceding slot. The
+voted head authenticated the key and opening; the tally state's registry
+supplies the index for the lottery. A key with a different VRF commitment in
+that registry cannot use this opening. With the same snapshots, adjacent
+dynasties replace the draws for just one seat index. Each version of that lane
+has one ticket in expectation, not a guaranteed single ticket.
+
+```python
+def compute_ac_vote_weight(state: BeaconState, vote: ACVote) -> Uint64:
+    for index, validator in enumerate(state.validators):
+        if validator.pubkey == vote.pubkey:
+            if validator.vrf_root != vote.vrf_root:
+                return Uint64(0)
+            dynasty = state.dynasty
+            snapshot_number = dynasty // HEAD_VOTE_COMMITTEE_SIZE
+            snapshots = state.ac_snapshots
+            return Uint64(
+                len(
+                    compute_ac_seat_indices(
+                        snapshots[snapshot_number % len(snapshots)],
+                        snapshots[(snapshot_number + 1) % len(snapshots)],
+                        dynasty,
+                        vote.slot,
+                        ValidatorIndex(index),
+                        vote.secret,
+                    )
+                )
+            )
+    return Uint64(0)
 ```
 
 #### New `sum_head_vote_weights`
 
-A vote contributes tickets derived from its own head. When an existing
-equivocation rule counts a voter once in a tally, use the maximum weight of that
-voter's applicable votes in that tally. Across branches, the authenticated
-public key identifies the voter; the validator index is local to the voted head.
+Each vote supports its signed head. When an equivocation rule counts a voter
+once in a tally, use the maximum weight of that voter's applicable votes.
 
 ```python
-def sum_head_vote_weights(votes: Sequence[ACVote] | set[ACVote], slot: Slot) -> Uint64:
+def sum_head_vote_weights(
+    store: Store, votes: Sequence[ACVote] | set[ACVote], slot: Slot
+) -> Uint64:
+    state = get_ac_tally_state(store)
     weights: dict[XMSSPubkey, Uint64] = {}
     for vote in votes:
         if vote.slot == slot:
-            weights[vote.pubkey] = max(weights.get(vote.pubkey, Uint64(0)), vote.weight)
+            weights[vote.pubkey] = max(
+                weights.get(vote.pubkey, Uint64(0)), compute_ac_vote_weight(state, vote)
+            )
     return Uint64(sum(weights.values()))
 ```
 
@@ -762,10 +821,9 @@ def get_local_view_from_p2p_messages(
 
 #### New `get_declaration_view`
 
-*Note*: An exact signed vote supplies the declaration's weight. Otherwise, two
-distinct signed votes by the declared validator satisfy readiness and enter the
-view as equivocation evidence. They supply weight only to the signed heads and
-are not marked as proposer support.
+*Note*: Readiness checks for an exact authenticated vote or two distinct votes
+by the declared validator, regardless of their current ticket counts. The two
+votes enter the view as equivocation evidence without proposer support.
 
 ```python
 def get_declaration_view(store: Store, slot: Slot) -> tuple[set[ACVote], set[ACVote], bool]:
@@ -1034,7 +1092,7 @@ def compute_head_walk_score(
     scoring_votes |= {
         vote for vote in support_votes if is_ancestor(store, vote.supported_node, node)
     }
-    return sum_head_vote_weights(scoring_votes, slot)
+    return sum_head_vote_weights(store, scoring_votes, slot)
 ```
 
 #### New `is_eligible_for_head_walk`
@@ -1068,7 +1126,7 @@ def is_eligible_for_head_walk(
     if block.slot == get_current_slot(store):
         return True
 
-    voting_seats_count = sum_head_vote_weights(votes, slot)
+    voting_seats_count = sum_head_vote_weights(store, votes, slot)
     score = compute_head_walk_score(store, votes, support_votes, slot, node)
 
     # Require a strict majority of participating tickets
@@ -1165,6 +1223,7 @@ def compute_confirmation_score(
     """
     equivocating_pubkeys = get_equivocating_pubkeys(votes)
     return sum_head_vote_weights(
+        store,
         [
             vote
             for vote in support_votes
@@ -1189,7 +1248,7 @@ def get_confirmed_head(
     """
     Return the confirmation candidate, or ``None`` if no node has sufficient support.
     """
-    voting_seats_count = sum_head_vote_weights(votes, slot)
+    voting_seats_count = sum_head_vote_weights(store, votes, slot)
 
     def is_eligible(node: ForkChoiceNode) -> bool:
         return (
@@ -1444,7 +1503,7 @@ def record_payload_receipt_time(store: Store, root: Root) -> None:
 ```python
 def record_head_vote_message(store: Store, message: HeadVoteMessage, vote: ACVote) -> None:
     """
-    Store the vote with its receipt time, authenticated key and ticket weight.
+    Store the vote with its receipt time, authenticated key and opening.
     """
     slot_pool = store.head_vote_messages.get(message.data.slot, [])
     slot_pool.append(message)
@@ -1530,7 +1589,7 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
             and vote.supported_node in fg_frame.tree
             and not is_compatible(store, vote.supported_node, node)
         }
-        return sum_head_vote_weights(opposing_votes, slot) >= HEAD_VOTE_UNLOCK_THRESHOLD
+        return sum_head_vote_weights(store, opposing_votes, slot) >= HEAD_VOTE_UNLOCK_THRESHOLD
 
     locks = set()
     for lock in get_live_locks(store, fg_frame, store.time_ms):
@@ -1552,25 +1611,26 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
 
 ### `on_head_vote_message` helpers
 
-#### New `get_head_vote_message_weight`
+#### New `is_valid_head_vote_message`
 
 ```python
-def get_head_vote_message_weight(state: BeaconState, message: HeadVoteMessage) -> Uint64:
+def is_valid_head_vote_message(state: BeaconState, message: HeadVoteMessage) -> bool:
     """
-    Return the weight of a valid head vote message, or zero.
+    Authenticate the head vote against the registry on its signed head.
     """
     if not is_head_vote_payload_status_valid(state, message.data):
-        return Uint64(0)
-    weight = get_head_vote_weight(state, message.data.slot, message.validator_index, message.proof)
-    if weight == 0:
-        return Uint64(0)
+        return False
+    if compute_epoch_at_slot(message.data.slot) < PQ_FORK_EPOCH:
+        return False
+    if message.validator_index >= len(state.validators):
+        return False
+    if not is_valid_vrf_proof(state, message.validator_index, message.data.slot, message.proof):
+        return False
     domain = get_domain(state, DOMAIN_HEAD_VOTE, compute_epoch_at_slot(message.data.slot))
     signing_root = compute_signing_root(message.data, domain)
     leaf_index = compute_xmss_leaf_index(message.data.slot, LEAF_OFFSET_HEAD_VOTE)
     pubkey = state.validators[message.validator_index].pubkey
-    if not xmss_verify(pubkey, leaf_index, signing_root, message.signature):
-        return Uint64(0)
-    return weight
+    return xmss_verify(pubkey, leaf_index, signing_root, message.signature)
 ```
 
 ## Handlers
@@ -1698,6 +1758,12 @@ def on_block(store: Store, signed_block: SignedBeaconBlock | eip8483.SignedBeaco
     store.blocks[block_root] = block
     # Add new state for this block to the store
     store.block_states[block_root] = state
+    tally_root = store.ac_tally_root
+    if tally_root is None or (state.dynasty, block_root) > (
+        get_block_state(store, tally_root).dynasty,
+        tally_root,
+    ):
+        store.ac_tally_root = block_root
     # Add a new PTC voting for this block to the store
     store.payload_timeliness_vote[block_root] = [None] * PTC_SIZE
     store.payload_data_availability_vote[block_root] = [None] * PTC_SIZE
@@ -1912,9 +1978,8 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
     ]
     if data in previous or len(previous) >= 2:
         return
-    weight = get_head_vote_message_weight(state, message)
-    assert weight > 0
-    vote = get_ac_vote(pubkey, data, weight)
+    assert is_valid_head_vote_message(state, message)
+    vote = get_ac_vote(state, message)
     if early:
         store.pending_head_votes.append((message, vote))
         return

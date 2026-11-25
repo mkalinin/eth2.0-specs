@@ -24,7 +24,16 @@ def at_slot(spec, slot):
 
 
 @pytest.fixture
-def tree(spec):
+def tree(spec, monkeypatch):
+    # Lock tests can specify exact ticket counts; authenticated votes use the sampler.
+    compute_weight = spec.compute_ac_vote_weight
+
+    def compute_vote_weight(state, vote):
+        if vote.vrf_root == spec.Root():
+            return spec.bytes_to_uint64(vote.secret[:8])
+        return compute_weight(state, vote)
+
+    monkeypatch.setattr(spec, "compute_ac_vote_weight", compute_vote_weight)
     # F -- P -- A -- A1
     #       \-- B -- B1
     blocks = {}
@@ -96,8 +105,12 @@ def vote(spec, store, node, validator, slot=10, received=None, weight=1):
     store.head_vote_message_receipt_times[root] = (
         at_slot(spec, slot) if received is None else received
     )
-    store.validated_head_votes[root] = spec.get_ac_vote(
-        spec.XMSSPubkey(validator.to_bytes(32, "little")), message.data, spec.Uint64(weight)
+    store.validated_head_votes[root] = spec.ACVote(
+        slot=message.data.slot,
+        pubkey=spec.XMSSPubkey(validator.to_bytes(32, "little")),
+        supported_node=node,
+        vrf_root=spec.Root(),
+        secret=spec.Bytes32(weight.to_bytes(32, "little")),
     )
 
 
@@ -878,7 +891,7 @@ def test_scheduled_fast_lock_at_threshold(spec, tree, seat_offset, fast_lock):
     assert spec.get_ac_frame(store) == (nodes["A"] if fast_lock else None)
 
 
-def test_queued_vote_preserves_validated_weight(spec, tree):
+def test_queued_vote_preserves_authenticated_opening(spec, tree):
     store, nodes = tree
     message = spec.HeadVoteMessage(
         validator_index=0,
@@ -886,7 +899,10 @@ def test_queued_vote_preserves_validated_weight(spec, tree):
             slot=12, beacon_block_root=nodes["A"].root, payload_status=spec.PAYLOAD_STATUS_EMPTY
         ),
     )
-    admitted = spec.get_ac_vote(spec.XMSSPubkey(), message.data, spec.Uint64(3))
+    state = store.block_states[nodes["A"].root]
+    add_elected_validator(spec, state)
+    message.proof = spec.VRFProof(data=get_vrf_proof(0, message.data.slot))
+    admitted = spec.get_ac_vote(state, message)
     store.pending_head_votes = [(message, admitted)]
     spec.on_tick(store, at_slot(spec, 12) + spec.get_head_vote_due_ms())
     assert not store.pending_head_votes
@@ -993,21 +1009,57 @@ def test_head_vote_gossip_uses_stale_voted_head(spec, tree):
     assert store.block_states[root].slot == 5
 
 
-def test_proposer_view_keeps_vote_weight_from_voted_head(spec, tree, monkeypatch):
+def test_admitted_vote_is_reweighed_when_max_dynasty_advances(spec, tree, monkeypatch):
     store, nodes = tree
     store.time_ms = at_slot(spec, 11) + spec.get_head_vote_due_ms() + 1
-    propose_votes(spec, store, nodes, [(nodes["B"], [0], True)])
-    block = store.blocks.pop(nodes["B1"].root)
-    store.block_states[block.parent_root] = store.block_states[nodes["B1"].root].copy()
-    store.block_states[block.parent_root].dynasty = spec.Dynasty(1)
-    # Isolate fork-choice admission from the already-validated state transition.
-    monkeypatch.setattr(spec, "state_transition", lambda state, signed, validate_result: None)
-    signed = spec.SignedBeaconBlock(message=block)
-    spec.on_block(store, signed)
-    assert spec.hash_tree_root(block) in store.blocks
-    votes, support = spec.get_proposer_view(store, spec.Slot(11))
-    assert [vote.weight for vote in votes] == [1]
-    assert votes == support
+    slot = spec.Slot(10)
+    state = store.block_states[nodes["F"].root]
+    add_elected_validator(spec, state)
+    state.ac_snapshots[0] = spec.ACSnapshot()
+    voted_state = state.copy()
+    store.block_states[nodes["B"].root] = voted_state
+    data = spec.HeadVoteData(
+        slot=slot, beacon_block_root=nodes["B"].root, payload_status=spec.PAYLOAD_STATUS_EMPTY
+    )
+    proof = spec.VRFProof(data=get_vrf_proof(0, slot))
+    message = spec.HeadVoteMessage(
+        validator_index=0,
+        data=data,
+        proof=proof,
+        signature=spec.get_head_vote_signature(voted_state, data, 1),
+    )
+    assert spec.get_head_vote_weight(voted_state, slot, spec.ValidatorIndex(0), proof) == 0
+    spec.on_head_vote_message(store, message)
+    votes = set(store.validated_head_votes.values())
+    assert len(votes) == 1
+    assert spec.sum_head_vote_weights(store, votes, slot) == 0
+
+    # The imported branch wins the tally view, not the vote's signed branch.
+    # Set a later dynasty start to distinguish current-dynasty from duty-slot lookup.
+    parent = store.block_states[nodes["A"].root] = state.copy()
+    parent.validators = spec.Validators(data=[spec.Validator(), state.validators[0]])
+    for seed in range(32):
+        parent.ac_snapshots[1] = spec.ACSnapshot(
+            weights=spec.ACWeights(data=[0, 1]), seed=spec.Bytes32(seed.to_bytes(32, "little"))
+        )
+        draws = spec.compute_ac_snapshot_seat_indices(
+            parent.ac_snapshots[1], spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
+        )
+        if 0 in draws:
+            break
+    assert 0 in draws
+
+    def transition(post, signed, validate_result):
+        if signed.message.slot == 11:
+            post.dynasty = spec.Dynasty(1)
+            post.dynasty_start_slot = spec.Slot(11)
+
+    monkeypatch.setattr(spec, "state_transition", transition)
+    for block_slot in (11, 10):
+        block = spec.BeaconBlock(slot=block_slot, parent_root=nodes["A"].root)
+        spec.on_block(store, spec.SignedBeaconBlock(message=block))
+        assert spec.get_ac_tally_state(store).dynasty == 1
+        assert spec.sum_head_vote_weights(store, votes, slot) == draws.count(0)
 
 
 def test_cross_branch_head_vote_identity(spec, tree):
@@ -1045,7 +1097,8 @@ def test_cross_branch_head_vote_identity(spec, tree):
     votes, _ = spec.get_combined_local_view(store, slot, infinite, infinite)
     assert {vote.supported_node for vote in votes} == {nodes["P"], nodes["A"], nodes["B"]}
     assert spec.get_equivocating_pubkeys(votes) == {spec.XMSSPubkey(spec.xmss.SkToPk(1))}
-    assert spec.sum_head_vote_weights(votes, slot) == 2 * spec.HEAD_VOTE_COMMITTEE_SIZE
+    store.ac_tally_root = nodes["B"].root
+    assert spec.sum_head_vote_weights(store, votes, slot) == spec.HEAD_VOTE_COMMITTEE_SIZE
 
 
 @pytest.mark.parametrize(("block_slot", "status"), [(11, 0), (11, 1), (11, 2), (4, 2), (4, 0)])

@@ -631,9 +631,9 @@ def validate_head_vote_gossip(
     if data_root in roots or len(roots) >= 2:
         raise GossipIgnore("duplicate head vote or two-vote limit reached")
 
-    # [REJECT] The signed vote has positive ticket weight on its head
-    if get_head_vote_message_weight(state, head_vote_message) == 0:
-        raise GossipReject("invalid head vote signature, opening or ticket weight")
+    # [REJECT] The signed vote has a valid signature and opening
+    if not is_valid_head_vote_message(state, head_vote_message):
+        raise GossipReject("invalid head vote signature or opening")
 
     # Mark this head vote as seen
     if head_vote_key not in seen.head_vote_validator_slots:
