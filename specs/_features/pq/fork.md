@@ -316,9 +316,11 @@ one use the eligible weights at the fork and the completed pre-fork RANDAO mix
 draws. The third entry captures its first snapshot when dynasty one begins.
 
 The AC bootstrap captures eligible weight from registered validators at the
-fork. A historical head upgraded independently can have no eligible weight and
-therefore supplies no AC seats. Proposer and payload timeliness committee
-lookahead retain their own requirements during epoch processing.
+fork. Until finality passes the fork, fork choice evaluates votes for pre-fork
+heads using each voted head's own upgraded snapshots. A historical head upgraded
+independently can have no eligible weight and therefore supplies no AC seats.
+Proposer and payload timeliness committee lookahead retain their own
+requirements during epoch processing.
 
 ```python
 def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
