@@ -1646,7 +1646,7 @@ advancing to its wall time. It skips all duties in earlier slots, including when
 catching up from an old anchor: it must not call this handler for those
 historical duty timestamps. Within the current slot, the first physical tick at
 or after a deadline dispatches that duty with its scheduled timestamp. Queued
-early votes carry their validated weight into the slot.
+early votes carry their authenticated data into the slot and are weighed at use.
 
 ```python
 def on_tick(store: Store, time_ms: Uint64) -> None:
@@ -1930,8 +1930,8 @@ def on_payload_attestation_message(
 ### New `on_head_vote_message`
 
 *Note*: Validates and stores a head vote on receipt. Its head must descend from
-the finalized checkpoint at admission. Subsequent finality updates resolve
-support using the current frame without undoing recorded cast weight.
+the finalized checkpoint at admission. Tallies resolve support using the current
+frame and compute weight from the current tally state.
 
 ```python
 def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
@@ -1997,8 +1997,9 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
 resolved P2P votes from the previous slot. Returns the head, declarations and
 support bits. The receipt and resolution thresholds are infinite, so whether a
 vote is support depends only on its data and the store, not on when the vote or
-its block was received. The proposer declares the messages in pool order, with
-one support bit per declaration.
+its block was received. If the declaration cap is exceeded, votes by pubkeys
+with tickets in the current tally state, including their equivocation evidence,
+take priority. Within each priority group, declarations keep pool order.
 
 ```python
 def get_ac_proposal(
@@ -2035,9 +2036,22 @@ def get_ac_proposal(
     if head.payload_status == PAYLOAD_STATUS_PENDING:
         head = ForkChoiceNode(root=head.root, payload_status=PAYLOAD_STATUS_EMPTY)
 
+    positions = list(range(len(vote_messages)))
+    limit = 4 * HEAD_VOTE_COMMITTEE_SIZE
+    if len(positions) > limit:
+        tally_state = get_ac_tally_state(store)
+        pool_votes = [
+            store.validated_head_votes[hash_tree_root(message)] for message in vote_messages
+        ]
+        weighted_pubkeys = {
+            vote.pubkey for vote in votes if compute_ac_vote_weight(tally_state, vote) > 0
+        }
+        positions.sort(key=lambda position: pool_votes[position].pubkey not in weighted_pubkeys)
+
     declarations = HeadVoteDeclarations()
     bits = HeadVoteSupportBits()
-    for position, message in enumerate(vote_messages[: 4 * HEAD_VOTE_COMMITTEE_SIZE]):
+    for position in positions[:limit]:
+        message = vote_messages[position]
         declarations.append(
             HeadVoteDeclaration(
                 validator_index=message.validator_index,

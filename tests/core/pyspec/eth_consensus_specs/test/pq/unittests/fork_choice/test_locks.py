@@ -552,6 +552,32 @@ def test_duty_unlock_uses_its_view(spec, tree, proposal):
         assert store.locks == {original}
 
 
+def test_proposal_declaration_cap_prioritizes_weighted_voters(spec, tree):
+    store, nodes = tree
+    store.time_ms = at_slot(spec, 11)
+    limit = 4 * spec.HEAD_VOTE_COMMITTEE_SIZE
+    unresolved = spec.ForkChoiceNode(root=nodes["B"].root, payload_status=spec.PAYLOAD_STATUS_FULL)
+    for index in range(limit):
+        vote(spec, store, nodes["A"], index, weight=0)
+    vote(spec, store, unresolved, limit, weight=0)
+    vote(spec, store, nodes["B1"], limit, weight=5)
+    vote(spec, store, nodes["B1"], limit + 1, weight=3)
+
+    head, declarations, bits = spec.get_ac_proposal(store)
+
+    assert head == nodes["B1"]
+    assert len(declarations) == len(bits) == limit
+    assert [item.validator_index for item in declarations] == [
+        limit,
+        limit,
+        limit + 1,
+        *range(limit - 3),
+    ]
+    assert [item.beacon_block_root for item in declarations[:2]] == [unresolved.root, head.root]
+    assert not bits[0]
+    assert all(bits[1:])
+
+
 @pytest.mark.parametrize("at_deadline", [False, True])
 def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
     store, nodes = tree
@@ -1060,6 +1086,26 @@ def test_admitted_vote_is_reweighed_when_max_dynasty_advances(spec, tree, monkey
         spec.on_block(store, spec.SignedBeaconBlock(message=block))
         assert spec.get_ac_tally_state(store).dynasty == 1
         assert spec.sum_head_vote_weights(store, votes, slot) == draws.count(0)
+
+
+@pytest.mark.parametrize("larger_first", [False, True])
+def test_tally_state_breaks_equal_dynasty_ties_by_root(spec, tree, monkeypatch, larger_first):
+    store, nodes = tree
+
+    def transition(post, signed, validate_result):
+        post.dynasty = spec.Dynasty(1)
+        post.dynasty_start_slot = signed.message.slot
+
+    monkeypatch.setattr(spec, "state_transition", transition)
+    blocks = [spec.BeaconBlock(slot=slot, parent_root=nodes["A"].root) for slot in (10, 11)]
+    blocks.sort(key=spec.hash_tree_root, reverse=larger_first)
+    for block in blocks:
+        spec.on_block(store, spec.SignedBeaconBlock(message=block))
+
+    assert (
+        spec.get_ac_tally_state(store).dynasty_start_slot
+        == max(blocks, key=spec.hash_tree_root).slot
+    )
 
 
 def test_cross_branch_head_vote_identity(spec, tree):
