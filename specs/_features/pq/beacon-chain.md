@@ -113,7 +113,7 @@
     - [New `compute_start_slot_at_round`](#new-compute_start_slot_at_round)
     - [New `compute_attestation_committee_slot`](#new-compute_attestation_committee_slot)
     - [Modified `compute_ptc`](#modified-compute_ptc)
-    - [New `compute_ac_seat_indices`](#new-compute_ac_seat_indices)
+    - [New `compute_ac_snapshot_seat_indices`](#new-compute_ac_snapshot_seat_indices)
   - [Predicates](#predicates)
     - [New `is_active_validator_preregistration`](#new-is_active_validator_preregistration)
     - [New `is_active_builder_preregistration`](#new-is_active_builder_preregistration)
@@ -151,7 +151,7 @@
     - [New `get_attestation_committee`](#new-get_attestation_committee)
     - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
-    - [New `get_ac_seat_indices`](#new-get_ac_seat_indices)
+    - [New `compute_ac_seat_indices`](#new-compute_ac_seat_indices)
     - [New `get_head_vote_weight`](#new-get_head_vote_weight)
     - [Modified `get_unslashed_participating_indices`](#modified-get_unslashed_participating_indices)
     - [New `get_validator_weight`](#new-get_validator_weight)
@@ -1623,7 +1623,7 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
     )
 ```
 
-#### New `compute_ac_seat_indices`
+#### New `compute_ac_snapshot_seat_indices`
 
 For a validator of weight `w`, the target expected ticket count is `w * T / W`,
 where `T` is the seat count and `W` is the frozen total weight. The validator
@@ -1636,7 +1636,7 @@ seats, including when an upgraded historical head has no eligible validators.
 Clients may cache the total weight for each snapshot.
 
 ```python
-def compute_ac_seat_indices(
+def compute_ac_snapshot_seat_indices(
     snapshot: ACSnapshot,
     snapshot_number: Uint64,
     slot: Slot,
@@ -2333,7 +2333,7 @@ def get_aggregate_participants(
     return participants
 ```
 
-#### New `get_ac_seat_indices`
+#### New `compute_ac_seat_indices`
 
 For dynasty `d`, the snapshot boundary index is `d % T`. Seat indices below it
 use the newer snapshot numbered `d // T + 1`; seat indices at or above it use
@@ -2344,8 +2344,9 @@ rollover. The returned sequence retains one entry per winning ticket, including
 repeated seat indices.
 
 ```python
-def get_ac_seat_indices(
-    state: BeaconState,
+def compute_ac_seat_indices(
+    old_snapshot: ACSnapshot,
+    new_snapshot: ACSnapshot,
     dynasty: Dynasty,
     slot: Slot,
     validator_index: ValidatorIndex,
@@ -2353,25 +2354,15 @@ def get_ac_seat_indices(
 ) -> Sequence[Uint64]:
     snapshot_number = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
     snapshot_boundary_index = dynasty % HEAD_VOTE_COMMITTEE_SIZE
-    snapshots = state.ac_snapshots
-    old_seat_indices = compute_ac_seat_indices(
-        snapshots[snapshot_number % len(snapshots)],
-        snapshot_number,
-        slot,
-        validator_index,
-        secret,
+    old_seat_indices = compute_ac_snapshot_seat_indices(
+        old_snapshot, snapshot_number, slot, validator_index, secret
     )
     seat_indices = [
         seat_index for seat_index in old_seat_indices if seat_index >= snapshot_boundary_index
     ]
     if snapshot_boundary_index > 0:
-        snapshot_number += 1
-        new_seat_indices = compute_ac_seat_indices(
-            snapshots[snapshot_number % len(snapshots)],
-            snapshot_number,
-            slot,
-            validator_index,
-            secret,
+        new_seat_indices = compute_ac_snapshot_seat_indices(
+            new_snapshot, snapshot_number + 1, slot, validator_index, secret
         )
         seat_indices.extend(
             seat_index for seat_index in new_seat_indices if seat_index < snapshot_boundary_index
@@ -2408,7 +2399,18 @@ def get_head_vote_weight(
         if slot < state.previous_dynasty_start_slot:
             return Uint64(0)
         dynasty -= 1
-    return Uint64(len(get_ac_seat_indices(state, dynasty, slot, validator_index, proof[0])))
+
+    snapshot_number = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
+    snapshots = state.ac_snapshots
+    seat_indices = compute_ac_seat_indices(
+        snapshots[snapshot_number % len(snapshots)],
+        snapshots[(snapshot_number + 1) % len(snapshots)],
+        dynasty,
+        slot,
+        validator_index,
+        proof[0],
+    )
+    return Uint64(len(seat_indices))
 ```
 
 #### Modified `get_unslashed_participating_indices`

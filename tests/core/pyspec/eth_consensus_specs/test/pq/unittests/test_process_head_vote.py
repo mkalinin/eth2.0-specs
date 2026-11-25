@@ -116,7 +116,7 @@ def test_snapshot_sampler_rounds_at_fractional_boundary(spec, monkeypatch, extra
         return sha256(data)
 
     monkeypatch.setattr(spec, "sha256", hash_with_controlled_draw)
-    seat_indices = spec.compute_ac_seat_indices(
+    seat_indices = spec.compute_ac_snapshot_seat_indices(
         snapshot, spec.Uint64(0), spec.Slot(1), index, spec.Bytes32()
     )
     assert len(seat_indices) == count + int(extra_ticket)
@@ -148,24 +148,28 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     assert state.dynasty == size - 1
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(1, slot))
-    seat_indices = spec.compute_ac_seat_indices(
+    seat_indices = spec.compute_ac_snapshot_seat_indices(
         second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
     )
     assert len(seat_indices) == size
-    expected = [seat_index for seat_index in seat_indices if seat_index < size - 1]
-    assert spec.get_ac_seat_indices(
-        state, state.dynasty, slot, spec.ValidatorIndex(1), proof[0]
-    ) == (expected)
+    boundary = size - 1
+    expected = [seat_index for seat_index in seat_indices if seat_index < boundary]
+    assert (
+        spec.compute_ac_seat_indices(
+            first, second, state.dynasty, slot, spec.ValidatorIndex(1), proof[0]
+        )
+        == expected
+    )
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == len(expected)
 
     old_index = spec.ValidatorIndex(0)
     old_secret = spec.VRFProof(data=get_vrf_proof(old_index, slot))[0]
-    old_seat_indices = spec.compute_ac_seat_indices(
+    old_seat_indices = spec.compute_ac_snapshot_seat_indices(
         first, spec.Uint64(0), slot, old_index, old_secret
     )
-    assert spec.get_ac_seat_indices(state, state.dynasty, slot, old_index, old_secret) == [
-        seat_index for seat_index in old_seat_indices if seat_index == size - 1
-    ]
+    assert spec.compute_ac_seat_indices(
+        first, second, state.dynasty, slot, old_index, old_secret
+    ) == [seat_index for seat_index in old_seat_indices if seat_index >= boundary]
 
     spec.process_slots(state, slot + 2)
     spec.advance_dynasty(state)
@@ -190,7 +194,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     new_proof = spec.VRFProof(data=get_vrf_proof(1, state.slot))
     assert spec.get_head_vote_weight(state, state.slot, spec.ValidatorIndex(1), new_proof) == size
     assert (
-        spec.compute_ac_seat_indices(
+        spec.compute_ac_snapshot_seat_indices(
             second, spec.Uint64(1), state.slot, spec.ValidatorIndex(1), new_proof[0]
         )
         != seat_indices
