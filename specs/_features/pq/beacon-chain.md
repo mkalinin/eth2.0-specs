@@ -151,6 +151,7 @@
     - [New `get_attestation_committee`](#new-get_attestation_committee)
     - [New `get_attestation_epoch`](#new-get_attestation_epoch)
     - [New `get_aggregate_participants`](#new-get_aggregate_participants)
+    - [New `get_ac_snapshot_cycle_length`](#new-get_ac_snapshot_cycle_length)
     - [New `compute_ac_seat_indices`](#new-compute_ac_seat_indices)
     - [New `get_head_vote_weight`](#new-get_head_vote_weight)
     - [Modified `get_unslashed_participating_indices`](#modified-get_unslashed_participating_indices)
@@ -226,6 +227,7 @@
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
       - [New `advance_dynasty`](#new-advance_dynasty)
+      - [New `get_ac_capture_index`](#new-get_ac_capture_index)
       - [New `update_ac_snapshots`](#new-update_ac_snapshots)
       - [New `advance_height`](#new-advance_height)
 
@@ -261,11 +263,12 @@ of finality pairs finalizes a pending justification, before the same block
 checks the target quorum.
 
 AC draws fresh balance-proportional tickets every slot from two frozen balance
-snapshots. Each new dynasty switches one seat index to the newer snapshot. A
-block declares the previous slot's votes that its proposer holds, with one
-support bit per declaration. Fork choice merges those declarations with signed
-votes. For epoch settlement of pending builder payments, blocks also carry head
-vote aggregates with a credential for each distinct voter.
+snapshots. Each new dynasty switches `HEAD_VOTE_SEATS_PER_DYNASTY` seat indices
+to the newer snapshot. A block declares the previous slot's votes that its
+proposer holds, with one support bit per declaration. Fork choice merges those
+declarations with signed votes. For epoch settlement of pending builder
+payments, blocks also carry head vote aggregates with a credential for each
+distinct voter.
 
 Validators cast FG attestations in rounds of `SLOTS_PER_ROUND` slots. Each
 validator sits on the attestation committee given by its index modulo
@@ -731,6 +734,7 @@ the record rules out the newest, so the state keeps the older one too.
 | Name                            | Value                  |
 | ------------------------------- | ---------------------- |
 | `HEAD_VOTE_COMMITTEE_SIZE`      | `Uint64(2**9)` (= 512) |
+| `HEAD_VOTE_SEATS_PER_DYNASTY`   | `Uint64(1)`            |
 | `HEAD_VOTE_FAST_LOCK_THRESHOLD` | `Uint64(327)`          |
 | `HEAD_VOTE_UNLOCK_THRESHOLD`    | `Uint64(277)`          |
 | `HEAD_VOTE_PAYMENT_TARGET`      | `Uint64(2**8)` (= 256) |
@@ -756,9 +760,9 @@ carry a slot's full set of votes, with slack for variation in the number of
 distinct voters. The builder payment target only limits payment accounting.
 
 Presets must set `HEAD_VOTE_COMMITTEE_SIZE` to a power of two so seat assignment
-by reduction modulo the committee size is uniform. It must also be at least
-`SLOTS_PER_EPOCH + 2` so the third descriptor can seal before the penultimate
-dynasty of each cycle.
+by reduction modulo the committee size is uniform. `HEAD_VOTE_SEATS_PER_DYNASTY`
+must be positive and divide `HEAD_VOTE_COMMITTEE_SIZE`. The number of dynasties
+in a snapshot cycle is the committee size divided by this rate.
 
 The active snapshots retain their frozen stake as the committee interpolates
 between them. Through a finality stall, the ticket draws remain fresh each slot
@@ -2344,13 +2348,23 @@ def get_aggregate_participants(
     return participants
 ```
 
+#### New `get_ac_snapshot_cycle_length`
+
+```python
+def get_ac_snapshot_cycle_length() -> Uint64:
+    rate = HEAD_VOTE_SEATS_PER_DYNASTY
+    assert 1 <= rate <= HEAD_VOTE_COMMITTEE_SIZE
+    assert HEAD_VOTE_COMMITTEE_SIZE % rate == 0
+    return HEAD_VOTE_COMMITTEE_SIZE // rate
+```
+
 #### New `compute_ac_seat_indices`
 
-For dynasty `d`, the caller supplies snapshots numbered `d // T` and
-`d // T + 1` as `old_snapshot` and `new_snapshot`, respectively. The snapshot
-boundary index is `d % T`. Seat indices below it use the newer snapshot; seat
-indices at or above it use the older snapshot. The next snapshot has number
-`d // T + 2`. Storage uses the snapshot number modulo three. Draws use the full
+For dynasty `d` and cycle length `C`, the caller supplies snapshots numbered
+`d // C` and `d // C + 1` as `old_snapshot` and `new_snapshot`, respectively.
+The boundary index is `(d % C) * HEAD_VOTE_SEATS_PER_DYNASTY`. Seat indices
+below it use the newer snapshot; seat indices at or above it use the older
+snapshot. Storage uses the snapshot number modulo three. Draws use the full
 number, so seats staying with a snapshot retain their draws for the same slot
 across a rollover. The returned sequence retains one entry per winning ticket,
 including repeated seat indices.
@@ -2364,8 +2378,9 @@ def compute_ac_seat_indices(
     validator_index: ValidatorIndex,
     secret: Bytes32,
 ) -> Sequence[Uint64]:
-    snapshot_number = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
-    snapshot_boundary_index = dynasty % HEAD_VOTE_COMMITTEE_SIZE
+    cycle_length = get_ac_snapshot_cycle_length()
+    snapshot_number = Uint64(dynasty // cycle_length)
+    snapshot_boundary_index = (dynasty % cycle_length) * HEAD_VOTE_SEATS_PER_DYNASTY
     old_seat_indices = compute_ac_snapshot_seat_indices(
         old_snapshot, snapshot_number, slot, validator_index, secret
     )
@@ -2413,11 +2428,12 @@ def get_head_vote_weight(
             return Uint64(0)
         dynasty -= 1
 
-    snapshot_number = Uint64(dynasty // HEAD_VOTE_COMMITTEE_SIZE)
+    snapshot_number = Uint64(dynasty // get_ac_snapshot_cycle_length())
     snapshots = state.ac_snapshots
+    old_index = snapshot_number % len(snapshots)
     seat_indices = compute_ac_seat_indices(
-        snapshots[snapshot_number % len(snapshots)],
-        snapshots[(snapshot_number + 1) % len(snapshots)],
+        snapshots[old_index],
+        snapshots[(old_index + 1) % len(snapshots)],
         dynasty,
         slot,
         validator_index,
@@ -2891,11 +2907,11 @@ known when the weights are fixed.
 
 ```python
 def process_ac_snapshot_updates(state: BeaconState) -> None:
-    if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 0:
+    cycle_length = get_ac_snapshot_cycle_length()
+    if state.dynasty == 0 or (cycle_length > 1 and state.dynasty % cycle_length == 0):
         return
     epoch = get_current_epoch(state)
-    snapshot_number = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
-    snapshot = state.ac_snapshots[snapshot_number % len(state.ac_snapshots)]
+    snapshot = state.ac_snapshots[get_ac_capture_index(state.dynasty)]
     if epoch == snapshot.seed_epoch:
         snapshot.seed = get_randao_mix(state, snapshot.seed_epoch)
 ```
@@ -4087,33 +4103,44 @@ def advance_dynasty(state: BeaconState) -> None:
     state.dynasty_start_slot = state.slot
 ```
 
+##### New `get_ac_capture_index`
+
+```python
+def get_ac_capture_index(dynasty: Dynasty) -> Uint64:
+    cycle_length = get_ac_snapshot_cycle_length()
+    cycle_index = Uint64(dynasty // cycle_length) % 3
+    offset = 1 if cycle_length == 1 else 2
+    return (cycle_index + offset) % 3
+```
+
 ##### New `update_ac_snapshots`
 
 At rollover, the third ring entry becomes the newest descriptor and the old
 entry is retained for votes from the previous dynasty. The next dynasty frees
 that retired entry, which can then capture weights for the next rollover.
 
-The fastest dynasty advance takes two slots: the height opened by the dynasty's
-entry block can be justified only by a later block, and the resulting pending
-justification can only be finalized by another block. As the snapshot boundary
-index goes from 1 at capture to `T - 1`, at least `2 * (T - 2)` slots elapse:
-1020 on mainnet and 28 on minimal. Sealing takes at most two epochs (64 or 16
-slots, respectively), so every block of the penultimate dynasty already carries
-the sealed snapshot. A chain entering the rollover dynasty must finalize one of
-those blocks. Registry indices are append-only on descendants of the capture
-block.
+When the cycle is one dynasty long, only one descriptor is active. Every entry
+after bootstrap captures the next descriptor, while retaining the descriptor of
+the immediately preceding dynasty. Registry indices are append-only on
+descendants of the capture block.
 
 ```python
 def update_ac_snapshots(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
-    snapshot_number = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
     snapshots = state.ac_snapshots
-    snapshots[snapshot_number % len(snapshots)] = ACSnapshot(
+    snapshots[get_ac_capture_index(state.dynasty)] = ACSnapshot(
         weights=get_ac_weights(state, epoch), seed=Bytes32(), seed_epoch=epoch + 1
     )
 ```
 
 ##### New `advance_height`
+
+Rollover requires a finalized block from after the next descriptor's seal. With
+the default rate, this is already guaranteed: at least two slots per dynasty
+leave `2 * (C - 2)` slots from capture to the last dynasty of a cycle of length
+`C`, more than the two epochs sealing can take on either preset. With faster
+cycles, a height can advance while the dynasty waits for the seal and its
+finalization.
 
 ```python
 def advance_height(state: BeaconState) -> None:
@@ -4132,7 +4159,13 @@ def advance_height(state: BeaconState) -> None:
 
     # A finalized block at or after the entry slot belongs to this dynasty.
     if state.finalized_checkpoint.height > 0 and state.finalized_slot >= state.dynasty_start_slot:
+        cycle_length = get_ac_snapshot_cycle_length()
+        phase = state.dynasty % cycle_length
+        if phase == cycle_length - 1 and state.dynasty > 0:
+            snapshot = state.ac_snapshots[get_ac_capture_index(state.dynasty)]
+            if compute_epoch_at_slot(state.finalized_slot) <= snapshot.seed_epoch:
+                return
         advance_dynasty(state)
-        if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
+        if cycle_length == 1 or state.dynasty % cycle_length == 1:
             update_ac_snapshots(state)
 ```

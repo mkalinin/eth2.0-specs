@@ -138,8 +138,10 @@ def test_ac_snapshot_stall_at_bootstrap_leaves_third_entry_untouched(spec, state
     assert state.ac_snapshots == snapshots
 
 
-def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch):
+@pytest.mark.parametrize("rate", [1, 2])
+def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeypatch, rate):
     monkeypatch.setitem(PREVIOUS_FORK_OF, spec.fork, EIP8483)
+    monkeypatch.setattr(spec, "HEAD_VOTE_SEATS_PER_DYNASTY", spec.Uint64(rate))
     # Disjoint snapshots expose selection on the wrong side of the snapshot boundary.
     first = spec.ACSnapshot(weights=spec.ACWeights(data=[1, 0]))
     second = spec.ACSnapshot(weights=spec.ACWeights(data=[0, 1]))
@@ -147,17 +149,18 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     state.ac_snapshots[1] = second
     state.ac_snapshots[2] = first
     size = spec.HEAD_VOTE_COMMITTEE_SIZE
-    state.dynasty = spec.Dynasty(size - 2)
+    cycle_length = size // rate
+    state.dynasty = spec.Dynasty(cycle_length - 2)
     state.dynasty_start_slot = spec.Slot(1)
     spec.advance_dynasty(state)
-    assert state.dynasty == size - 1
+    assert state.dynasty == cycle_length - 1
     slot = state.slot
     proof = spec.VRFProof(data=get_vrf_proof(1, slot))
     seat_indices = spec.compute_ac_snapshot_seat_indices(
         second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
     )
     assert len(seat_indices) == size
-    boundary = size - 1
+    boundary = size - rate
     expected = [seat_index for seat_index in seat_indices if seat_index < boundary]
     assert (
         spec.compute_ac_seat_indices(
@@ -178,7 +181,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
 
     spec.process_slots(state, slot + 2)
     spec.advance_dynasty(state)
-    assert state.dynasty == size
+    assert state.dynasty == cycle_length
     assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == len(expected)
 
     # The pre-rollover duty remains eligible immediately after rollover.
@@ -225,11 +228,11 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     older_finality.pending_finality[0].slot = slot + 1
     spec.process_block(older_finality, block)
     assert older_finality.target_checkpoint.height == 4
-    assert older_finality.dynasty == size
+    assert older_finality.dynasty == cycle_length
     assert older_finality.ac_snapshots[0] == first
 
     spec.process_block(state, block)
-    assert state.dynasty == size + 1
+    assert state.dynasty == cycle_length + 1
     assert len(state.ac_snapshots) == 3
     assert sum(int(weight) for weight in state.ac_snapshots[0].weights) > 1
     assert state.ac_snapshots[1] == second
@@ -260,6 +263,41 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
     spec.process_slots(state, spec.compute_start_slot_at_epoch(epoch + 2))
     assert state.ac_snapshots[0].seed == mix
     assert state.ac_snapshots[0].weights == captured
+
+
+def test_ac_full_rotation_waits_for_finalized_seal(spec, state, monkeypatch):
+    monkeypatch.setattr(spec, "HEAD_VOTE_SEATS_PER_DYNASTY", spec.HEAD_VOTE_COMMITTEE_SIZE)
+    bootstrap = state.ac_snapshots[1].copy()
+    state.finalized_checkpoint.height = spec.Height(1)
+    state.finalized_slot = state.slot - 1
+    spec.advance_height(state)
+    assert state.dynasty == 1
+    assert state.ac_snapshots[1] == bootstrap
+
+    snapshot = state.ac_snapshots[2].copy()
+    seed_epoch = spec.get_current_epoch(state) + 1
+    assert snapshot.seed_epoch == seed_epoch
+    assert snapshot.seed == spec.Bytes32()
+    state.finalized_slot = state.slot
+    spec.advance_height(state)
+    assert state.dynasty == 1
+
+    spec.process_slots(state, spec.compute_start_slot_at_epoch(seed_epoch))
+    mix = spec.Bytes32(b"\x37" * 32)
+    state.randao_mixes[seed_epoch % spec.EPOCHS_PER_HISTORICAL_VECTOR] = mix
+    seal_slot = spec.compute_start_slot_at_epoch(seed_epoch + 1)
+    spec.process_slots(state, seal_slot + 1)
+    assert state.ac_snapshots[2].seed == mix
+    state.finalized_slot = seal_slot - 1
+    spec.advance_height(state)
+    assert state.dynasty == 1
+
+    state.finalized_slot = seal_slot
+    spec.advance_height(state)
+    assert state.dynasty == 2
+    assert state.ac_snapshots[1] == bootstrap
+    assert state.ac_snapshots[2].seed == mix
+    assert state.ac_snapshots[0].seed_epoch == seed_epoch + 2
 
 
 def test_same_slot_vote_records_participation(spec, state):
