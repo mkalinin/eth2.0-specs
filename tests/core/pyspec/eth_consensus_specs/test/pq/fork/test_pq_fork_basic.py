@@ -280,7 +280,12 @@ def test_fork_registration_of_builder_legacy_pubkey(spec, phases, state):
 def test_fork_next_epoch(spec, phases, state):
     register_xmss_pubkeys(spec, state)
     next_epoch(spec, state)
-    yield from run_fork_test(phases[PQ], state)
+    post_spec = phases[PQ]
+    post_state = yield from run_fork_test(post_spec, state)
+    seed_epoch = spec.get_current_epoch(state) - 1
+    for snapshot in post_state.ac_snapshots[:2]:
+        assert snapshot.seed_epoch == seed_epoch
+        assert snapshot.seed == spec.get_randao_mix(state, seed_epoch)
 
 
 @with_phases(phases=[EIP8483], other_phases=[PQ])
@@ -300,6 +305,8 @@ def test_fork_with_no_active_validators_in_next_epoch(spec, phases, state):
     post_spec = phases[PQ]
     post_state = yield from run_fork_test(post_spec, state)
     snapshot = post_state.ac_snapshots[0].copy()
+    assert snapshot.seed_epoch == post_spec.GENESIS_EPOCH
+    assert snapshot.seed == spec.get_randao_mix(state, spec.GENESIS_EPOCH)
     weight = int(state.validators[0].effective_balance // spec.EFFECTIVE_BALANCE_INCREMENT)
     assert list(snapshot.weights) == [weight] + [0] * (len(post_state.validators) - 1)
 

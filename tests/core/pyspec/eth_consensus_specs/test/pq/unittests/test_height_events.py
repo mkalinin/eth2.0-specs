@@ -83,11 +83,16 @@ def test_target_quorum_waits_for_justified_predecessor(
 
 
 def test_blocked_quorum_falls_through_to_timeout(spec):
-    state = state_at(spec, 3, 2, 1, slot_offset=spec.TIMEOUT_DELAY_SLOTS)
+    state = state_at(spec, 3, 2, 1, slot_offset=spec.TIMEOUT_DELAY_SLOTS + 1)
+    # The current dynasty's block was finalized before the timeout opened a height.
+    state.dynasty_start_slot = spec.Slot(1)
+    state.finalized_slot = spec.Slot(1)
     spec.process_height_events(state)
     assert state.justified_checkpoint == checkpoint(spec, 2, 2)
     assert [p.checkpoint for p in state.pending_finality] == [checkpoint(spec, 2, 2)]
     assert state.target_checkpoint.height == 4
+    assert state.dynasty == 1
+    assert state.dynasty_start_slot == state.slot
 
 
 def test_predecessor_finalized_in_the_same_event_opens_the_gate(spec):
@@ -137,6 +142,7 @@ def test_pending_finality_retains_two_newest_justifications(spec):
     spec.process_height_events(state)
     assert state.finalized_checkpoint.height == 3
     assert state.finalized_slot == 3
+    assert state.dynasty == 0
     assert [int(item.checkpoint.height) for item in state.pending_finality] == [5]
 
     state.target_checkpoint = spec.HeightCheckpoint(height=7, root=spec.Root(b"\x07" * 32))

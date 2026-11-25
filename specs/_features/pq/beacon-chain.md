@@ -225,6 +225,7 @@
     - [Height events](#height-events)
       - [New `is_previous_height_justified`](#new-is_previous_height_justified)
       - [New `process_height_events`](#new-process_height_events)
+      - [New `process_dynasty`](#new-process_dynasty)
       - [New `advance_dynasty`](#new-advance_dynasty)
       - [New `update_ac_snapshots`](#new-update_ac_snapshots)
       - [New `advance_height`](#new-advance_height)
@@ -1252,7 +1253,7 @@ class PendingFinality(Container):
 class ACSnapshot(Container):
     weights: ACWeights
     seed: Bytes32
-    capture_epoch: Epoch
+    seed_epoch: Epoch
 ```
 
 #### `HeadVoteCredential`
@@ -1627,9 +1628,8 @@ def compute_ptc(state: BeaconState, slot: Slot) -> PayloadTimelinessCommittee:
 
 For a validator of weight `w`, the target expected ticket count is `w * T / W`,
 where `T` is the seat count and `W` is the frozen total weight. The validator
-receives the integer part plus one ticket with probability rounded up from the
-fractional part to the nearest multiple of `2**-64`. A single comparison with
-128-bit products implements this rounding, with bias less than `2**-64`. Each
+receives the integer part plus one ticket with probability equal to the
+fractional part. Rejection sampling draws a uniform residue modulo `W`. Each
 ticket independently chooses a seat index uniformly, with replacement. Repeated
 seat indices count as separate tickets. A validator with zero weight receives no
 seats, including when an upgraded historical head has no eligible validators.
@@ -1648,8 +1648,10 @@ def compute_ac_snapshot_seat_indices(
     weight = snapshot.weights[validator_index]
     if weight == 0:
         return []
-    total = sum(int(weight) for weight in snapshot.weights)
-    count, remainder = divmod(int(weight) * int(HEAD_VOTE_COMMITTEE_SIZE), total)
+    total = sum(Uint64(weight) for weight in snapshot.weights)
+    numerator = Uint64(weight) * HEAD_VOTE_COMMITTEE_SIZE
+    count = numerator // total
+    remainder = numerator % total
     seed = sha256(
         DOMAIN_HEAD_VOTE_COMMITTEE
         + snapshot.seed
@@ -1658,8 +1660,18 @@ def compute_ac_snapshot_seat_indices(
         + uint_to_bytes(validator_index)
         + secret
     )
-    if int(bytes_to_uint64(seed[:8])) * total < remainder * 2**64:
-        count += 1
+    if remainder > 0:
+        # Accept a multiple of total draws. At most total < 2**56 draws are
+        # rejected, so the rejection probability is below 1/256.
+        limit = UINT64_MAX // total * total
+        attempt = Uint64(0)
+        while True:
+            draw = bytes_to_uint64(sha256(seed + b"\x00" + uint_to_bytes(attempt))[:8])
+            if draw < limit:
+                if draw % total < remainder:
+                    count += 1
+                break
+            attempt = Uint64(0) if attempt == UINT64_MAX else attempt + 1
     return [
         Uint64(
             bytes_to_uint64(sha256(seed + b"\x01" + uint_to_bytes(Uint64(ticket)))[:8])
@@ -2335,13 +2347,14 @@ def get_aggregate_participants(
 
 #### New `compute_ac_seat_indices`
 
-For dynasty `d`, the snapshot boundary index is `d % T`. Seat indices below it
-use the newer snapshot numbered `d // T + 1`; seat indices at or above it use
-the older snapshot numbered `d // T`. The next snapshot has number `d // T + 2`.
-Storage uses the snapshot number modulo three. Draws use the full number, so
-seats staying with a snapshot retain their draws for the same slot across a
-rollover. The returned sequence retains one entry per winning ticket, including
-repeated seat indices.
+For dynasty `d`, the caller supplies snapshots numbered `d // T` and
+`d // T + 1` as `old_snapshot` and `new_snapshot`, respectively. The snapshot
+boundary index is `d % T`. Seat indices below it use the newer snapshot; seat
+indices at or above it use the older snapshot. The next snapshot has number
+`d // T + 2`. Storage uses the snapshot number modulo three. Draws use the full
+number, so seats staying with a snapshot retain their draws for the same slot
+across a rollover. The returned sequence retains one entry per winning ticket,
+including repeated seat indices.
 
 ```python
 def compute_ac_seat_indices(
@@ -2870,11 +2883,11 @@ def get_ac_weights(state: BeaconState, epoch: Epoch) -> ACWeights:
 
 #### New `process_ac_snapshot_updates`
 
-Seal at the end of the first full epoch after capture, using that epoch's
-completed RANDAO mix. A slashing before capture can change which weights are
-recorded. In the last slot of the capture epoch, the block's RANDAO reveal runs
-before capture, so that epoch's completed mix may already be known when the
-weights are fixed.
+Seal at the end of `snapshot.seed_epoch`, the first full epoch after capture,
+using that epoch's completed RANDAO mix. A slashing before capture can change
+which weights are recorded. In the last slot of the capture epoch, the block's
+RANDAO reveal runs before capture, so that epoch's completed mix may already be
+known when the weights are fixed.
 
 ```python
 def process_ac_snapshot_updates(state: BeaconState) -> None:
@@ -2883,8 +2896,8 @@ def process_ac_snapshot_updates(state: BeaconState) -> None:
     epoch = get_current_epoch(state)
     snapshot_number = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
     snapshot = state.ac_snapshots[snapshot_number % len(state.ac_snapshots)]
-    if epoch > GENESIS_EPOCH and epoch - 1 == snapshot.capture_epoch:
-        snapshot.seed = get_randao_mix(state, epoch)
+    if epoch == snapshot.seed_epoch:
+        snapshot.seed = get_randao_mix(state, snapshot.seed_epoch)
 ```
 
 #### New `process_preregistration_expiry`
@@ -3032,18 +3045,7 @@ def process_block(state: BeaconState, block: BeaconBlock) -> None:
     # [Modified in PQ]
     # Removed `process_sync_aggregate`
     # [New in PQ:EIP8453]
-    height = state.target_checkpoint.height
     process_height_events(state)
-    if state.target_checkpoint.height > height:
-        # Dynasties are monotone along the chain, so finalizing a block at or
-        # after the current dynasty's start slot finalizes a block of that dynasty.
-        if (
-            state.finalized_checkpoint.height > 0
-            and state.finalized_slot >= state.dynasty_start_slot
-        ):
-            advance_dynasty(state)
-            if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
-                update_ac_snapshots(state)
 ```
 
 #### Modified `process_randao`
@@ -4063,13 +4065,26 @@ def process_height_events(state: BeaconState) -> None:
                 participation=HeightParticipation(data=[Boolean(False)] * len(state.validators)),
             )
         )
-        advance_height(state)
-    elif (
+    elif not (
         has_quorum(state, state.progress_participation)
         # Timeouts count only after the delay
         and state.slot >= state.target_slot + TIMEOUT_DELAY_SLOTS
     ):
-        advance_height(state)
+        return
+
+    advance_height(state)
+    process_dynasty(state)
+```
+
+##### New `process_dynasty`
+
+```python
+def process_dynasty(state: BeaconState) -> None:
+    # A finalized block at or after the entry slot belongs to this dynasty.
+    if state.finalized_checkpoint.height > 0 and state.finalized_slot >= state.dynasty_start_slot:
+        advance_dynasty(state)
+        if state.dynasty % HEAD_VOTE_COMMITTEE_SIZE == 1:
+            update_ac_snapshots(state)
 ```
 
 ##### New `advance_dynasty`
@@ -4103,7 +4118,7 @@ def update_ac_snapshots(state: BeaconState) -> None:
     snapshot_number = state.dynasty // HEAD_VOTE_COMMITTEE_SIZE + 2
     snapshots = state.ac_snapshots
     snapshots[snapshot_number % len(snapshots)] = ACSnapshot(
-        weights=get_ac_weights(state, epoch), seed=Bytes32(), capture_epoch=epoch
+        weights=get_ac_weights(state, epoch), seed=Bytes32(), seed_epoch=epoch + 1
     )
 ```
 

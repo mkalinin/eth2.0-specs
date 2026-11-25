@@ -269,7 +269,7 @@ def create_genesis_state(spec, validator_balances, activation_threshold, builder
         snapshot = spec.ACSnapshot(
             weights=weights,
             seed=spec.get_randao_mix(state, spec.GENESIS_EPOCH),
-            capture_epoch=spec.GENESIS_EPOCH,
+            seed_epoch=spec.GENESIS_EPOCH,
         )
         state.ac_snapshots[0] = snapshot
         state.ac_snapshots[1] = snapshot

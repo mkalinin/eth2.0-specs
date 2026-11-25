@@ -102,16 +102,21 @@ def test_snapshot_total_can_exceed_uint16(spec, state):
 
 
 @pytest.mark.parametrize("extra_ticket", [False, True])
-def test_snapshot_sampler_rounds_at_fractional_boundary(spec, monkeypatch, extra_ticket):
+def test_snapshot_sampler_retries_and_checks_fractional_boundary(spec, monkeypatch, extra_ticket):
     snapshot = spec.ACSnapshot(weights=spec.ACWeights(data=[2, 1]))
     index = spec.ValidatorIndex(0)
     count, remainder = divmod(2 * int(spec.HEAD_VOTE_COMMITTEE_SIZE), 3)
-    cutoff = (remainder * 2**64 + 2) // 3
-    draw = cutoff - int(extra_ticket)
+    # For total 3, reject the maximum draw, then test the residue boundary.
+    seed = spec.Bytes32()
+    draw = 3 + remainder - int(extra_ticket)
     sha256 = spec.sha256
 
     def hash_with_controlled_draw(data):
         if len(data) == len(spec.DOMAIN_HEAD_VOTE_COMMITTEE) + 32 + 3 * 8 + 32:
+            return seed
+        if data == seed + b"\x00" + bytes(8):
+            return spec.Bytes32(b"\xff" * 32)
+        if data == seed + b"\x00" + b"\x01" + bytes(7):
             return spec.Bytes32(draw.to_bytes(8, "little") + b"\xff" * 24)
         return sha256(data)
 
@@ -233,7 +238,7 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
 
     # Its child rejects the same duty although the payment epoch is still open.
     epoch = spec.get_current_epoch(state)
-    assert state.ac_snapshots[0].capture_epoch == epoch
+    assert state.ac_snapshots[0].seed_epoch == epoch + 1
     assert spec.get_randao_mix(state, epoch) != spec.Bytes32()
     spec.process_slots(state, state.slot + 1)
     child = build_empty_block(spec, state)

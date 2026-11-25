@@ -312,8 +312,9 @@ upgrade. Participation in the last epoch before the upgrade is not rewarded.
 
 AC starts at dynasty zero with snapshot boundary index zero. Snapshots zero and
 one use the eligible weights at the fork and the completed pre-fork RANDAO mix
-(the genesis mix at a genesis fork). Their snapshot numbers distinguish their
-draws. The third entry captures its first snapshot when dynasty one begins.
+(the genesis mix at a genesis fork), with `seed_epoch` recording the epoch of
+that mix. Their snapshot numbers distinguish their draws. The third entry
+captures its first snapshot when dynasty one begins.
 
 The AC bootstrap captures eligible weight from registered validators at the
 fork. Until finality passes the fork, fork choice evaluates votes for pre-fork
@@ -446,7 +447,7 @@ def upgrade_to_pq(pre: eip8483.BeaconState) -> BeaconState:
     snapshot = ACSnapshot(
         weights=weights,
         seed=get_randao_mix(post, seed_epoch),
-        capture_epoch=epoch,
+        seed_epoch=seed_epoch,
     )
     post.ac_snapshots[0] = snapshot
     post.ac_snapshots[1] = snapshot
