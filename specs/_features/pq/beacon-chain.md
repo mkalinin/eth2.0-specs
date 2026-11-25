@@ -728,19 +728,25 @@ the record rules out the newest, so the state keeps the older one too.
 
 ### Head votes
 
-| Name                           | Value                  |
-| ------------------------------ | ---------------------- |
-| `HEAD_VOTE_COMMITTEE_SIZE`     | `Uint64(2**9)` (= 512) |
-| `HEAD_VOTE_QUORUM_DENOMINATOR` | `Uint64(576)`          |
-| `HEAD_VOTE_PAYMENT_TARGET`     | `Uint64(2**7)` (= 128) |
+| Name                            | Value                  |
+| ------------------------------- | ---------------------- |
+| `HEAD_VOTE_COMMITTEE_SIZE`      | `Uint64(2**9)` (= 512) |
+| `HEAD_VOTE_FAST_LOCK_THRESHOLD` | `Uint64(327)`          |
+| `HEAD_VOTE_UNLOCK_THRESHOLD`    | `Uint64(277)`          |
+| `HEAD_VOTE_PAYMENT_TARGET`      | `Uint64(2**8)` (= 256) |
 
-The committee size is an expectation, not a bound. The absolute fork-choice
-thresholds use a fixed denominator with slack above that expectation. Epoch
-settlement of still-pending builder payments instead requires a fixed number of
-distinct voters, regardless of their ticket counts. Both thresholds are draft
-parameters: the denominator is not a bound on the number of tickets on one head
-or across competing heads. In particular, the thresholds do not imply
-deterministic quorum intersection.
+The committee size is an expectation, not a bound. The fast-lock threshold is
+sized against the upper tail of the total ticket count to make disjoint fast
+quorums unlikely. The lower unlock threshold is sized against adversarial ticket
+weight while allowing honest voters to move older locks with less support. The
+mainnet lock thresholds use a 10× seed-grinding buffer in their per-slot risk
+budget; they do not imply deterministic quorum intersection.
+
+The builder payment target is half the expected committee size, sized to limit
+payments backed by adversarial voters alone while remaining reachable by honest
+voters. Settlement counts distinct voters across all seats, not tickets. Minimal
+scales each threshold by its committee size relative to mainnet and rounds up to
+a whole number; it does not target the same tail probabilities.
 
 The block credential limit is twice the expected committee size so a block can
 carry a slot's full set of votes, with slack for variation in the number of

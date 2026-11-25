@@ -420,6 +420,8 @@ def test_last_eligible_block_credits_previous_epoch_once(spec, state, shortfall)
     withdrawal = spec.BuilderPendingWithdrawal(amount=1)
     state.builder_pending_payments[spec.SLOTS_PER_EPOCH + 2].withdrawal = withdrawal
     count = spec.HEAD_VOTE_PAYMENT_TARGET - shortfall
+    # Give each eligible voter multiple tickets so ticket weight cannot stand in for voter count.
+    state.ac_snapshots[0].weights = spec.ACWeights(data=[1] * spec.HEAD_VOTE_PAYMENT_TARGET)
     vote = signed_vote(spec, state, 2, spec.PAYLOAD_STATUS_PENDING, count)
     expected = [credential.validator_index for credential in vote.credentials]
     assert len(expected) == count

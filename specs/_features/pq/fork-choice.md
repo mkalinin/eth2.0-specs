@@ -73,7 +73,6 @@
     - [New `record_head_vote_message`](#new-record_head_vote_message)
   - [`on_tick` helpers](#on_tick-helpers)
     - [New `update_confirmation`](#new-update_confirmation)
-    - [New `update_optimistic_confirmation`](#new-update_optimistic_confirmation)
     - [New `unlock`](#new-unlock)
   - [`on_head_vote_message` helpers](#on_head_vote_message-helpers)
     - [New `get_head_vote_message_weight`](#new-get_head_vote_message_weight)
@@ -1245,8 +1244,8 @@ def compute_confirmed_lock(
 #### New `compute_fast_lock`
 
 *Note*: Selects non-genesis nodes on the path to `confirmed` within the FG frame
-whose confirmation support reaches half the fixed quorum denominator. The
-deepest selected node is the fast lock.
+whose confirmation support reaches the fast-lock ticket threshold. The deepest
+selected node is the fast lock.
 
 ```python
 def compute_fast_lock(
@@ -1267,8 +1266,8 @@ def compute_fast_lock(
         live_locks=live_locks,
         confirmed=confirmed,
         test_predicate=lambda node: (
-            2 * compute_confirmation_score(store, votes, support_votes, slot, node)
-            >= HEAD_VOTE_QUORUM_DENOMINATOR
+            compute_confirmation_score(store, votes, support_votes, slot, node)
+            >= HEAD_VOTE_FAST_LOCK_THRESHOLD
         ),
     )
 ```
@@ -1509,60 +1508,6 @@ def update_confirmation(store: Store, slot: Slot) -> None:
     )
 ```
 
-#### New `update_optimistic_confirmation`
-
-*Note*: Before the half-slot cutoff, a node confirms the deepest node supported
-by resolved votes reaching three quarters of the fixed quorum denominator and
-conflicting with no live lock. Equal-depth candidates prefer a decided payload
-over PENDING, then the lowest root and payload status. Each validator counts
-once per candidate, including an equivocator with a vote extending that
-candidate. This writes a current-slot fast lock but does not write a scheduled
-confirmation candidate or emit an FG attestation.
-
-```python
-def update_optimistic_confirmation(store: Store) -> None:
-    slot = get_current_slot(store)
-    if slot == GENESIS_SLOT:
-        return
-    if get_time_into_slot_ms(store) >= get_support_cutoff_ms():
-        return
-    fg_frame = get_fg_frame(store)
-    _, support_votes = get_combined_local_view(store, slot, INFINITE_TIME_MS, INFINITE_TIME_MS)
-    live_locks = get_live_locks(store, fg_frame, store.time_ms)
-    candidates = set()
-    for node in fg_frame.tree:
-        voters = {
-            vote
-            for vote in support_votes
-            if vote.slot == slot
-            and vote.supported_node in fg_frame.tree
-            and is_ancestor(store, vote.supported_node, node)
-        }
-        seats = sum_head_vote_weights(voters, slot)
-        if 4 * seats >= 3 * HEAD_VOTE_QUORUM_DENOMINATOR and not conflicts_with_lock(
-            store, live_locks, node
-        ):
-            candidates.add(node)
-    if len(candidates) == 0:
-        return
-    confirmed = min(
-        candidates,
-        key=lambda node: (
-            -int(store.blocks[node.root].slot),
-            node.payload_status == PAYLOAD_STATUS_PENDING,
-            node.root,
-            node.payload_status,
-        ),
-    )
-    expiry = compute_fast_lock_expiry(live_locks, slot)
-    add_locks(store, fg_frame, {ACLock(node=confirmed, slot=slot, fast=True, expiry_slot=expiry)})
-    if not (
-        store.latest_confirmed in fg_frame.tree
-        and is_ancestor(store, store.latest_confirmed, confirmed)
-    ):
-        store.latest_confirmed = confirmed
-```
-
 #### New `unlock`
 
 *Note*: Equivocators count as opposition to every node. Other validators count
@@ -1577,7 +1522,7 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
     fg_frame = get_fg_frame(store)
     equivocating_pubkeys = get_equivocating_pubkeys(votes)
 
-    def is_opposed_by_majority(node: ForkChoiceNode) -> bool:
+    def reaches_unlock_threshold(node: ForkChoiceNode) -> bool:
         opposing_votes = {vote for vote in votes if vote.pubkey in equivocating_pubkeys}
         opposing_votes |= {
             vote
@@ -1586,7 +1531,7 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
             and vote.supported_node in fg_frame.tree
             and not is_compatible(store, vote.supported_node, node)
         }
-        return 2 * sum_head_vote_weights(opposing_votes, slot) >= HEAD_VOTE_QUORUM_DENOMINATOR
+        return sum_head_vote_weights(opposing_votes, slot) >= HEAD_VOTE_UNLOCK_THRESHOLD
 
     locks = set()
     for lock in get_live_locks(store, fg_frame, store.time_ms):
@@ -1595,7 +1540,7 @@ def unlock(store: Store, slot: Slot, votes: set[ACVote], support_votes: set[ACVo
             fallback_path = {
                 ancestor
                 for ancestor in fg_frame.tree
-                if is_ancestor(store, node, ancestor) and not is_opposed_by_majority(ancestor)
+                if is_ancestor(store, node, ancestor) and not reaches_unlock_threshold(ancestor)
             }
             node = (
                 get_deepest_node(store, fallback_path)
@@ -1678,7 +1623,6 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
             store.pending_head_votes.append((message, vote))
         elif message.data.slot >= previous_slot:
             record_head_vote_message(store, message, vote)
-            update_optimistic_confirmation(store)
             get_ac_vote_head(store)
 
     if time_into_slot_ms == get_head_vote_due_ms():
@@ -1691,8 +1635,7 @@ def on_tick(store: Store, time_ms: Uint64) -> None:
 ### Modified `on_block`
 
 *Note*: On importing a PQ block, update finality, record its receipt time and
-re-evaluate optimistic confirmation and head vote preparation. PQ blocks carry
-no payload attestations.
+re-evaluate head vote preparation. PQ blocks carry no payload attestations.
 
 ```python
 def on_block(store: Store, signed_block: SignedBeaconBlock | eip8483.SignedBeaconBlock) -> None:
@@ -1769,7 +1712,6 @@ def on_block(store: Store, signed_block: SignedBeaconBlock | eip8483.SignedBeaco
 
     # [Modified in PQ]
     # Removed `notify_ptc_messages`
-    update_optimistic_confirmation(store)
     get_ac_vote_head(store)
 ```
 
@@ -1812,7 +1754,6 @@ def on_execution_payload_envelope(
 
     # Add execution payload envelope to the store
     store.payloads[envelope.beacon_block_root] = envelope
-    update_optimistic_confirmation(store)
     get_ac_vote_head(store)
 ```
 
@@ -1981,7 +1922,6 @@ def on_head_vote_message(store: Store, message: HeadVoteMessage) -> None:
 
     # Record the message
     record_head_vote_message(store, message, vote)
-    update_optimistic_confirmation(store)
     get_ac_vote_head(store)
 ```
 

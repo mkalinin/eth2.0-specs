@@ -101,11 +101,6 @@ def vote(spec, store, node, validator, slot=10, received=None, weight=1):
     )
 
 
-def vote_half(spec, store, node, slot=10):
-    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
-        vote(spec, store, node, validator, slot)
-
-
 def add_elected_validator(spec, state):
     state.validators.append(spec.Validator(pubkey=spec.xmss.SkToPk(1), vrf_root=get_vrf_root(0)))
     state.ac_snapshots[0] = spec.ACSnapshot(weights=spec.ACWeights(data=[1]))
@@ -116,7 +111,7 @@ def test_fast_expiry_grows_and_is_capped(spec, tree):
     expiries = []
     for slot in range(10, 43):
         store.time_ms = at_slot(spec, slot + 1) + spec.get_support_cutoff_ms()
-        vote(spec, store, nodes["A"], 0, slot=slot, weight=spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2)
+        vote(spec, store, nodes["A"], 0, slot=slot, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
         spec.update_confirmation(store, spec.Slot(slot))
         current = [item for item in store.locks if item.slot == slot and item.fast]
         assert len(current) == 1
@@ -130,7 +125,7 @@ def test_fast_expiry_paper_example_and_gap(spec, tree, monkeypatch):
     expiries = []
     for slot in [10, 11, 12, 13, 14, 16]:
         store.time_ms = at_slot(spec, slot + 1) + spec.get_support_cutoff_ms()
-        vote_half(spec, store, nodes["A"], slot=slot)
+        vote(spec, store, nodes["A"], 0, slot=slot, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
         spec.update_confirmation(store, spec.Slot(slot))
         current = [item for item in store.locks if item.slot == slot and item.fast]
         assert len(current) == 1
@@ -178,7 +173,7 @@ def test_fast_and_slow_locks_with_same_node_and_expiry(spec, tree, monkeypatch):
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["A"])
     store.locks = {lock(spec, nodes["A"], expiry=12)}
-    vote_half(spec, store, nodes["A"])
+    vote(spec, store, nodes["A"], 0, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
     spec.update_confirmation(store, spec.Slot(10))
     new = {item for item in store.locks if item.slot == 10}
     assert new == {
@@ -192,7 +187,7 @@ def test_fast_and_slow_locks_can_have_different_nodes(spec, tree, monkeypatch):
     monkeypatch.setattr(spec, "SLOW_LOCK_WINDOW", spec.Slot(4))
     store, nodes = tree
     store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["P"])
-    vote_half(spec, store, nodes["A"])
+    vote(spec, store, nodes["A"], 0, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
     spec.update_confirmation(store, spec.Slot(10))
     assert store.locks == {
         lock(spec, nodes["A"], slot=10, fast=True, expiry=12),
@@ -207,7 +202,7 @@ def test_veto_records_candidate_and_locks_shared_ancestor(spec, tree, monkeypatc
     existing = lock(spec, nodes["A"])
     store.locks = {existing}
     store.saved_confirmations = dict.fromkeys(range(7, 10), nodes["B"])
-    vote_half(spec, store, nodes["B"])
+    vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
     spec.update_confirmation(store, spec.Slot(10))
     assert store.saved_confirmations[10] == nodes["B"]
     assert store.latest_confirmed == nodes["A"]
@@ -281,11 +276,12 @@ def test_anchor_uses_frame_root_when_lock_is_its_ancestor(spec, tree):
     )
 
 
-def test_unlock_half_moves_to_common_ancestor_preserving_fields(spec, tree):
+def test_unlock_at_threshold_moves_to_common_ancestor_preserving_fields(spec, tree):
     store, nodes = tree
     original = lock(spec, nodes["A"], fast=False)
     store.locks = {original}
-    vote_half(spec, store, nodes["B"])
+    for validator in range(spec.HEAD_VOTE_UNLOCK_THRESHOLD):
+        vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
         spec.Slot(10),
@@ -296,11 +292,11 @@ def test_unlock_half_moves_to_common_ancestor_preserving_fields(spec, tree):
     assert store.locks == {replace(original, node=nodes["P"])}
 
 
-def test_unlock_below_half_keeps_lock(spec, tree):
+def test_unlock_below_threshold_keeps_lock(spec, tree):
     store, nodes = tree
     original = lock(spec, nodes["A"])
     store.locks = {original}
-    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2 - 1):
+    for validator in range(spec.HEAD_VOTE_UNLOCK_THRESHOLD - 1):
         vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
@@ -317,7 +313,7 @@ def test_unlock_does_not_move_same_or_newer_slot_lock(spec, tree, lock_slot):
     store, nodes = tree
     original = lock(spec, nodes["A"], slot=lock_slot)
     store.locks = {original}
-    vote_half(spec, store, nodes["B"])
+    vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_UNLOCK_THRESHOLD)
     spec.unlock(
         store,
         spec.Slot(10),
@@ -334,7 +330,7 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
     store.locks = {original}
     unknown_a = replace(nodes["A"], root=spec.Root(b"\xfe" * 32))
     unknown_b = replace(nodes["B"], root=spec.Root(b"\xff" * 32))
-    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
+    for validator in range(spec.HEAD_VOTE_UNLOCK_THRESHOLD):
         vote(spec, store, unknown_a, validator)
         vote(spec, store, unknown_b, validator)
     spec.unlock(
@@ -344,7 +340,7 @@ def test_unlock_equivocators_count_without_resolved_votes(spec, tree):
             store, spec.Slot(10), spec.INFINITE_TIME_MS, spec.INFINITE_TIME_MS
         ),
     )
-    # Half equivocating opposes every ancestor, including F. Use the explicit F fallback.
+    # Equivocating weight at the threshold opposes every ancestor, including F.
     assert store.locks == {replace(original, node=spec.get_fg_frame(store).finalized_node)}
 
 
@@ -352,10 +348,10 @@ def test_unlock_equivocator_not_counted_twice(spec, tree):
     store, nodes = tree
     original = lock(spec, nodes["A"])
     store.locks = {original}
-    # One equivocator plus half-minus-two clean opponents is still below half.
+    # Counting the equivocator twice would reach the unlock threshold.
     vote(spec, store, nodes["A"], 0)
     vote(spec, store, nodes["B"], 0)
-    for validator in range(1, spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2 - 1):
+    for validator in range(1, spec.HEAD_VOTE_UNLOCK_THRESHOLD - 1):
         vote(spec, store, nodes["B"], validator)
     spec.unlock(
         store,
@@ -371,7 +367,7 @@ def test_unlock_counts_duplicate_committee_seats(spec, tree):
     store, nodes = tree
     original = lock(spec, nodes["A"])
     store.locks = {original}
-    vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2)
+    vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_UNLOCK_THRESHOLD)
     spec.unlock(
         store,
         spec.Slot(10),
@@ -389,7 +385,7 @@ def test_unlock_full_empty_conflict_moves_to_pending(spec, tree):
     store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
     store.payload_receipt_times[nodes["A"].root] = spec.Uint64(0)
     full = replace(nodes["A"], payload_status=spec.PAYLOAD_STATUS_FULL)
-    vote_half(spec, store, full)
+    vote(spec, store, full, 0, weight=spec.HEAD_VOTE_UNLOCK_THRESHOLD)
     spec.unlock(
         store,
         spec.Slot(10),
@@ -419,7 +415,7 @@ def test_confirmation_tick_uses_current_time_for_lock_expiry(spec, tree):
     store.latest_confirmed = nodes["A"]
     store.locks = {lock(spec, nodes["A"], slot=8, expiry=10)}
     store.time_ms = at_slot(spec, 11) - 1
-    vote_half(spec, store, nodes["B"])
+    vote(spec, store, nodes["B"], 0, weight=spec.HEAD_VOTE_FAST_LOCK_THRESHOLD)
     tick_time = at_slot(spec, 11) + spec.get_support_cutoff_ms()
     spec.on_tick(store, tick_time)
     assert store.time_ms == tick_time
@@ -431,10 +427,10 @@ def test_equivocators_do_not_supply_fast_lock_support(spec, tree):
     store, nodes = tree
     vote(spec, store, nodes["A"], 0)
     vote(spec, store, nodes["B"], 0)
-    for validator in range(1, spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
+    for validator in range(1, spec.HEAD_VOTE_FAST_LOCK_THRESHOLD):
         vote(spec, store, nodes["A"], validator)
     spec.update_confirmation(store, spec.Slot(10))
-    # The clean votes exceed half of participation, but are below half of the committee.
+    # The clean votes suffice for relative confirmation but not a fast lock.
     assert store.latest_confirmed == nodes["A"]
     assert not store.locks
 
@@ -446,7 +442,7 @@ def test_equivocators_do_not_supply_fast_lock_support(spec, tree):
 def test_confirmed_tip_common_ancestor(spec, tree, confirmed_name, head_name, expected_name):
     store, nodes = tree
     store.latest_confirmed = nodes[confirmed_name]
-    vote_half(spec, store, nodes[head_name], slot=11)
+    vote(spec, store, nodes[head_name], 0, slot=11)
     assert spec.get_head(store) == nodes[head_name]
     assert spec.get_confirmed_node(store) == nodes[expected_name]
     assert store.latest_confirmed == nodes[confirmed_name]
@@ -464,7 +460,7 @@ def test_confirmed_tip_payload_status(spec, tree, confirmed_status, head_status)
         nodes["A"], payload_status=getattr(spec, f"PAYLOAD_STATUS_{confirmed_status}")
     )
     head = replace(nodes["A"], payload_status=getattr(spec, f"PAYLOAD_STATUS_{head_status}"))
-    vote_half(spec, store, head, slot=11)
+    vote(spec, store, head, 0, slot=11)
     assert spec.get_head(store) == head
     assert spec.get_confirmed_node(store) == replace(
         nodes["A"], payload_status=spec.PAYLOAD_STATUS_PENDING
@@ -474,7 +470,7 @@ def test_confirmed_tip_payload_status(spec, tree, confirmed_status, head_status)
 def test_confirmed_tip_outside_frame(spec, tree):
     store, nodes = tree
     store.latest_confirmed = replace(nodes["A"], root=spec.Root(b"\xff" * 32))
-    vote_half(spec, store, nodes["B1"], slot=11)
+    vote(spec, store, nodes["B1"], 0, slot=11)
     assert spec.get_head(store) == nodes["B1"]
     assert spec.get_confirmed_node(store) == spec.get_fg_frame(store).finalized_node
 
@@ -530,7 +526,7 @@ def test_duty_unlock_uses_its_view(spec, tree, proposal):
     original = lock(spec, nodes["A"])
     store.locks = {original}
     late = at_slot(spec, 10) + spec.get_view_freeze_ms()
-    for validator in range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2):
+    for validator in range(spec.HEAD_VOTE_UNLOCK_THRESHOLD):
         vote(spec, store, nodes["B"], validator, received=late)
     store.time_ms = at_slot(spec, 11)
     if proposal:
@@ -550,13 +546,13 @@ def test_voter_unlock_uses_proposer_support_once(spec, tree, at_deadline):
     store.locks = {original}
     proposal = store.blocks[nodes["B1"].root]
     proposal.slot = spec.Slot(11)
-    indices = list(range(spec.HEAD_VOTE_QUORUM_DENOMINATOR // 2))
+    indices = list(range(spec.HEAD_VOTE_UNLOCK_THRESHOLD))
     propose_votes(spec, store, nodes, [(nodes["B"], indices, True)])
     store.time_ms = at_slot(spec, 11)
     if at_deadline:
         # The last seat holds only B. Counting its unheld declaration for A
         # would mark it as equivocating; dropping the whole proposal would
-        # also lose the half-committee support needed to unlock.
+        # also lose the support needed to reach the unlock threshold.
         proposal.body.head_vote_declarations.append(
             spec.HeadVoteDeclaration(
                 validator_index=indices[-1],
@@ -856,7 +852,7 @@ def test_responsive_vote_deadline_and_duplicate_preparation(spec, tree):
     store.time_ms = at_slot(spec, 11)
     assert spec.get_ac_vote_head(store) is None
     store.blocks[nodes["B1"].root].slot = spec.Slot(11)
-    vote_half(spec, store, nodes["B"])
+    vote(spec, store, nodes["B"], 0)
     expected = replace(nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING)
     assert spec.get_ac_vote_head(store) == expected
     store.time_ms += spec.get_head_vote_due_ms() + 1
@@ -865,55 +861,21 @@ def test_responsive_vote_deadline_and_duplicate_preparation(spec, tree):
     assert spec.get_ac_vote_head(store) is None
 
 
-@pytest.mark.parametrize(
-    ("seat_offset", "cutoff_offset", "conflict", "expected"),
-    [
-        (0, -1, False, "A"),
-        (-1, -1, False, "F"),
-        (0, 0, False, "F"),
-        (0, -1, True, "P"),
-    ],
-)
-def test_optimistic_threshold_cutoff_and_veto(
-    spec, tree, seat_offset, cutoff_offset, conflict, expected
-):
+@pytest.mark.parametrize(("seat_offset", "fast_lock"), [(-1, False), (0, True)])
+def test_scheduled_fast_lock_at_threshold(spec, tree, seat_offset, fast_lock):
     store, nodes = tree
-    store.time_ms = at_slot(spec, 11) + spec.get_support_cutoff_ms() + cutoff_offset
-    if conflict:
-        store.locks = {lock(spec, nodes["B"], slot=10, expiry=15)}
-    seats = (3 * spec.HEAD_VOTE_QUORUM_DENOMINATOR + 3) // 4 + seat_offset
-    vote(spec, store, nodes["A"], 0, slot=11, weight=seats)
-    spec.update_optimistic_confirmation(store)
-    confirmed = store.latest_confirmed
-    assert confirmed.root == nodes[expected].root
-    if expected != "F":
-        expiry = 17 if conflict else 13
-        assert lock(spec, nodes[expected], slot=11, expiry=expiry) in store.locks
-        assert 11 not in store.saved_confirmations
-        # Repeating the optimistic check does not extend same-slot expiry.
-        spec.update_optimistic_confirmation(store)
-        assert {item.expiry_slot for item in store.locks if item.slot == 11} == {expiry}
-        store.time_ms = at_slot(spec, 11) + spec.get_support_cutoff_ms()
-        assert spec.get_ac_frame(store) == nodes["B" if conflict else expected]
-
-
-def test_optimistic_equivocator_counts_once_per_candidate(spec, tree):
-    store, nodes = tree
-    store.time_ms = at_slot(spec, 11) + 1
-    quarter = spec.HEAD_VOTE_QUORUM_DENOMINATOR // 4
-    vote(spec, store, nodes["A"], 0, slot=11, weight=quarter)
-    vote(spec, store, nodes["B"], 0, slot=11, weight=2 * quarter - 1)
-    vote(spec, store, nodes["A"], 1, slot=11, weight=quarter)
-    spec.update_optimistic_confirmation(store)
-    assert store.latest_confirmed.root == nodes["F"].root
-    vote(spec, store, nodes["A"], 2, slot=11, weight=2 * quarter)
-    spec.update_optimistic_confirmation(store)
+    store.time_ms = at_slot(spec, 11)
+    cutoff = store.time_ms + spec.get_support_cutoff_ms()
+    seats = spec.HEAD_VOTE_FAST_LOCK_THRESHOLD + seat_offset
+    vote(spec, store, nodes["A"], 0, slot=10, weight=seats)
+    spec.on_tick(store, cutoff - 1)
+    assert not store.locks
+    assert 10 not in store.saved_confirmations
+    spec.on_tick(store, cutoff)
     assert store.latest_confirmed == nodes["A"]
-    assert lock(spec, nodes["A"], slot=11, expiry=13) in store.locks
-    store.time_ms = at_slot(spec, 12) + spec.get_support_cutoff_ms()
-    spec.update_confirmation(store, spec.Slot(11))
-    assert store.saved_confirmations[11] == nodes["A"]
-    assert spec.get_ac_frame(store) == nodes["A"]
+    assert store.saved_confirmations[10] == nodes["A"]
+    assert store.locks == ({lock(spec, nodes["A"], slot=10, expiry=12)} if fast_lock else set())
+    assert spec.get_ac_frame(store) == (nodes["A"] if fast_lock else None)
 
 
 def test_queued_vote_preserves_validated_weight(spec, tree):
@@ -941,7 +903,7 @@ def test_responsive_vote_accepts_other_in_frame_proposer(spec, tree):
     proposal = store.blocks[nodes["B1"].root]
     proposal.slot = spec.Slot(11)
     proposal.proposer_index = 2
-    vote_half(spec, store, nodes["B"])
+    vote(spec, store, nodes["B"], 0)
     assert spec.is_ac_vote_ready(store)
     assert spec.get_ac_vote_head(store) == replace(
         nodes["B1"], payload_status=spec.PAYLOAD_STATUS_PENDING
@@ -1086,23 +1048,6 @@ def test_cross_branch_head_vote_identity(spec, tree):
     assert spec.sum_head_vote_weights(votes, slot) == 2 * spec.HEAD_VOTE_COMMITTEE_SIZE
 
 
-@pytest.mark.parametrize("status", [0, 1, 2])
-def test_optimistic_confirmation_requires_resolved_support(spec, tree, status):
-    store, nodes = tree
-    store.time_ms = at_slot(spec, 11) + 1
-    store.blocks[nodes["A1"].root].slot = spec.Slot(11)
-    store.payloads[nodes["A1"].root] = spec.ExecutionPayloadEnvelope()
-    store.payload_receipt_times[nodes["A1"].root] = store.time_ms
-    node = replace(nodes["A1"], payload_status=spec.PayloadStatus(status))
-    vote(spec, store, node, 0, slot=11, weight=spec.HEAD_VOTE_COMMITTEE_SIZE)
-    spec.update_optimistic_confirmation(store)
-    if status == spec.PAYLOAD_STATUS_PENDING:
-        assert store.latest_confirmed == node
-    else:
-        assert store.latest_confirmed.root == nodes["F"].root
-        assert not store.locks
-
-
 @pytest.mark.parametrize(("block_slot", "status"), [(11, 0), (11, 1), (11, 2), (4, 2), (4, 0)])
 def test_receipt_enforces_vote_slot_payload_status(spec, tree, monkeypatch, block_slot, status):
     store, nodes = tree
@@ -1122,9 +1067,8 @@ def test_receipt_enforces_vote_slot_payload_status(spec, tree, monkeypatch, bloc
     if (block_slot == 11) == (status == spec.PAYLOAD_STATUS_PENDING):
         spec.on_head_vote_message(store, message)
         assert store.head_vote_messages[11] == [message]
-        assert store.latest_confirmed == replace(
-            nodes["A1"], payload_status=spec.PayloadStatus(status)
-        )
+        assert store.latest_confirmed == spec.get_fg_frame(store).finalized_node
+        assert not store.locks
     else:
         with pytest.raises(AssertionError):
             spec.on_head_vote_message(store, message)
@@ -1179,42 +1123,6 @@ def test_vote_resolution_enforces_status_in_both_arrival_orders(
     assert view[1] == ([0] if valid else [])
     tree_nodes = spec.get_fg_frame(store).tree
     assert spec.is_usable_proposer_support(store, tree_nodes, data) == valid
-    spec.update_optimistic_confirmation(store)
-    assert (store.latest_confirmed.root == root) == valid
-
-
-def test_optimistic_payload_tie_uses_lowest_status(spec, tree):
-    store, nodes = tree
-    store.time_ms = at_slot(spec, 11) + 1
-    store.payloads[nodes["A"].root] = spec.ExecutionPayloadEnvelope()
-    store.payload_receipt_times[nodes["A"].root] = store.time_ms
-    for status in (spec.PAYLOAD_STATUS_FULL, spec.PAYLOAD_STATUS_EMPTY):
-        vote(
-            spec,
-            store,
-            replace(nodes["A"], payload_status=status),
-            0,
-            slot=11,
-            weight=spec.HEAD_VOTE_COMMITTEE_SIZE,
-        )
-    spec.update_optimistic_confirmation(store)
-    assert store.latest_confirmed == nodes["A"]
-
-
-@pytest.mark.parametrize("root_byte", [7, 8, 9, 10])
-def test_optimistic_equal_rank_uses_lowest_root(spec, tree, root_byte):
-    store, nodes = tree
-    store.time_ms = at_slot(spec, 11) + 1
-    original = nodes["B1"].root
-    root = spec.Root(bytes([root_byte]) * 32)
-    for mapping in (store.blocks, store.block_states, store.block_receipt_times):
-        mapping[root] = mapping.pop(original)
-    node_b = replace(nodes["B1"], root=root)
-    store.blocks[root].slot = store.blocks[nodes["A1"].root].slot
-    for node in (nodes["A1"], node_b):
-        vote(spec, store, node, 0, slot=11, weight=spec.HEAD_VOTE_COMMITTEE_SIZE)
-    spec.update_optimistic_confirmation(store)
-    assert store.latest_confirmed == nodes["A1"]
 
 
 def test_slow_lock_does_not_require_fast_threshold(spec, tree):
