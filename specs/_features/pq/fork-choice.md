@@ -679,9 +679,9 @@ def get_ac_tally_state(store: Store) -> BeaconState:
 The tally uses its current dynasty, even for a vote from the preceding slot. The
 voted head authenticated the key and opening; the tally state's registry
 supplies the index for the lottery. A key with a different VRF commitment in
-that registry cannot use this opening. With the same snapshot history, adjacent
-dynasties replace the draws for `HEAD_VOTE_SEATS_PER_DYNASTY` seat indices. Each
-version of each lane has one ticket in expectation.
+that registry cannot use this opening. The tally selects the snapshot for each seat
+using `compute_ac_seat_indices`. Each version of each lane has one ticket in
+expectation.
 
 ```python
 def compute_ac_vote_weight(state: BeaconState, vote: ACVote) -> Uint64:

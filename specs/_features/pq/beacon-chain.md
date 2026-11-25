@@ -263,8 +263,9 @@ of finality pairs finalizes a pending justification, before the same block
 checks the target quorum.
 
 AC draws fresh balance-proportional tickets every slot from two frozen balance
-snapshots. Each new dynasty switches `HEAD_VOTE_SEATS_PER_DYNASTY` seat indices
-to the newer snapshot. A block declares the previous slot's votes that its
+snapshots. One dynasty after rollover, the first `HEAD_VOTE_SEATS_PER_DYNASTY`
+seat indices switch to the newer snapshot. Two dynasties after rollover, all
+remaining seats switch. A block declares the previous slot's votes that its
 proposer holds, with one support bit per declaration. Fork choice merges those
 declarations with signed votes. For epoch settlement of pending builder
 payments, blocks also carry head vote aggregates with a credential for each
@@ -2362,9 +2363,10 @@ def get_ac_snapshot_cycle_length() -> Uint64:
 
 For dynasty `d` and cycle length `C`, the caller supplies snapshots numbered
 `d // C` and `d // C + 1` as `old_snapshot` and `new_snapshot`, respectively.
-The boundary index is `(d % C) * HEAD_VOTE_SEATS_PER_DYNASTY`. Seat indices
-below it use the newer snapshot; seat indices at or above it use the older
-snapshot. Storage uses the snapshot number modulo three. Draws use the full
+At phase `d % C == 0`, all seats use the older snapshot. At phase one, indices
+below `HEAD_VOTE_SEATS_PER_DYNASTY` use the newer snapshot and the rest use the
+older snapshot. From phase two onward, all seats use the newer snapshot.
+Storage uses the snapshot number modulo three. Draws use the full
 number, so seats staying with a snapshot retain their draws for the same slot
 across a rollover. The returned sequence retains one entry per winning ticket,
 including repeated seat indices.
@@ -2380,7 +2382,12 @@ def compute_ac_seat_indices(
 ) -> Sequence[Uint64]:
     cycle_length = get_ac_snapshot_cycle_length()
     snapshot_number = Uint64(dynasty // cycle_length)
-    snapshot_boundary_index = (dynasty % cycle_length) * HEAD_VOTE_SEATS_PER_DYNASTY
+    phase = dynasty % cycle_length
+    if phase >= 2:
+        return compute_ac_snapshot_seat_indices(
+            new_snapshot, snapshot_number + 1, slot, validator_index, secret
+        )
+    snapshot_boundary_index = phase * HEAD_VOTE_SEATS_PER_DYNASTY
     old_seat_indices = compute_ac_snapshot_seat_indices(
         old_snapshot, snapshot_number, slot, validator_index, secret
     )

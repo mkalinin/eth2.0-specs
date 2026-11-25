@@ -160,29 +160,23 @@ def test_ac_snapshot_rollover_retains_only_previous_dynasty(spec, state, monkeyp
         second, spec.Uint64(1), slot, spec.ValidatorIndex(1), proof[0]
     )
     assert len(seat_indices) == size
-    boundary = size - rate
-    expected = [seat_index for seat_index in seat_indices if seat_index < boundary]
-    assert (
-        spec.compute_ac_seat_indices(
-            first, second, state.dynasty, slot, spec.ValidatorIndex(1), proof[0]
-        )
-        == expected
-    )
-    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == len(expected)
+    for phase, boundary in [(0, 0), (1, rate), (2, size), (state.dynasty, size)]:
+        assert spec.compute_ac_seat_indices(
+            first, second, spec.Dynasty(phase), slot, spec.ValidatorIndex(1), proof[0]
+        ) == [seat for seat in seat_indices if seat < boundary]
+    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == size
 
     old_index = spec.ValidatorIndex(0)
     old_secret = spec.VRFProof(data=get_vrf_proof(old_index, slot))[0]
-    old_seat_indices = spec.compute_ac_snapshot_seat_indices(
-        first, spec.Uint64(0), slot, old_index, old_secret
+    assert (
+        spec.compute_ac_seat_indices(first, second, state.dynasty, slot, old_index, old_secret)
+        == []
     )
-    assert spec.compute_ac_seat_indices(
-        first, second, state.dynasty, slot, old_index, old_secret
-    ) == [seat_index for seat_index in old_seat_indices if seat_index >= boundary]
 
     spec.process_slots(state, slot + 2)
     spec.advance_dynasty(state)
     assert state.dynasty == cycle_length
-    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == len(expected)
+    assert spec.get_head_vote_weight(state, slot, spec.ValidatorIndex(1), proof) == size
 
     # The pre-rollover duty remains eligible immediately after rollover.
     data = spec.HeadVoteData(
