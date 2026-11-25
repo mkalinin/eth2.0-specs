@@ -82,17 +82,25 @@ def test_target_quorum_waits_for_justified_predecessor(
         assert state.target_checkpoint == checkpoint(spec, 3, 3)
 
 
-def test_blocked_quorum_falls_through_to_timeout(spec):
-    state = state_at(spec, 3, 2, 1, slot_offset=spec.TIMEOUT_DELAY_SLOTS + 1)
+@pytest.mark.parametrize("shortfall", [1, 0])
+def test_blocked_quorum_falls_through_to_timeout(spec, shortfall):
+    target_slot = spec.Slot(2)
+    state = state_at(spec, 3, 2, 1, slot_offset=target_slot + spec.TIMEOUT_DELAY_SLOTS - shortfall)
+    state.target_slot = target_slot
     # The current dynasty's block was finalized before the timeout opened a height.
     state.dynasty_start_slot = spec.Slot(1)
     state.finalized_slot = spec.Slot(1)
     spec.process_height_events(state)
     assert state.justified_checkpoint == checkpoint(spec, 2, 2)
     assert [p.checkpoint for p in state.pending_finality] == [checkpoint(spec, 2, 2)]
-    assert state.target_checkpoint.height == 4
-    assert state.dynasty == 1
-    assert state.dynasty_start_slot == state.slot
+    if shortfall:
+        assert state.target_checkpoint.height == 3
+        assert state.dynasty == 0
+        assert state.dynasty_start_slot == 1
+    else:
+        assert state.target_checkpoint.height == 4
+        assert state.dynasty == 1
+        assert state.dynasty_start_slot == state.slot
 
 
 def test_predecessor_finalized_in_the_same_event_opens_the_gate(spec):

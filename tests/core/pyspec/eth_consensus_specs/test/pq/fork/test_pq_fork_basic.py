@@ -280,12 +280,17 @@ def test_fork_registration_of_builder_legacy_pubkey(spec, phases, state):
 def test_fork_next_epoch(spec, phases, state):
     register_xmss_pubkeys(spec, state)
     next_epoch(spec, state)
+    next_epoch(spec, state)
+    # Distinguish the completed mix from both genesis and the fork epoch.
+    expected_seed = spec.Bytes32(b"\x11" * 32)
+    state.randao_mixes[0] = spec.Bytes32(b"\x00" * 32)
+    state.randao_mixes[1] = expected_seed
+    state.randao_mixes[2] = spec.Bytes32(b"\x22" * 32)
     post_spec = phases[PQ]
     post_state = yield from run_fork_test(post_spec, state)
-    seed_epoch = spec.get_current_epoch(state) - 1
     for snapshot in post_state.ac_snapshots[:2]:
-        assert snapshot.seed_epoch == seed_epoch
-        assert snapshot.seed == spec.get_randao_mix(state, seed_epoch)
+        assert snapshot.seed_epoch == 1
+        assert snapshot.seed == expected_seed
 
 
 @with_phases(phases=[EIP8483], other_phases=[PQ])
